@@ -4,6 +4,20 @@ Three [n8n](https://n8n.io) workflows that change the timer settings on a **Suns
 
 > ⚠️ Read [DISCLAIMER.md](DISCLAIMER.md) first. This uses an unofficial API to write settings to your inverter. **All writes are off by default.**
 
+> 📘 **Setting up?** Start with the **[Configuration guide](docs/configuration.md)**, which covers every setting, a worked example and the order for going live.
+
+## Documentation
+
+- [Overview](docs/overview.md): concepts and how the workflows work together
+- [Installation](docs/installation.md): prerequisites and step-by-step setup
+- **[Configuration](docs/configuration.md)**: every setting, its checks and going live
+- Workflows: [IO EV Guard](docs/workflows/io-ev-guard.md), [Evening Sell](docs/workflows/evening-sell.md), [Sunsynk Control](docs/workflows/sunsynk-control.md)
+- [Safety model](docs/safety.md): dry run, write gates, read-back and fail-closed paths
+- [Testing](docs/testing.md): offline tests and a live test checklist
+- [Troubleshooting](docs/troubleshooting.md)
+- [FAQ](docs/faq.md)
+- [Timer quirks](docs/timer-quirks.md)
+
 ## The problem it solves
 
 Intelligent Octopus charges the car overnight in the normal off-peak window (23:30–05:30 by default). It often adds "extra" dispatches outside that window too, for example in the afternoon. While one of those runs, the whole house is billed at the cheap rate.
@@ -114,7 +128,7 @@ The guard and Sell each use their own timer slot (5 and 6 by default). Neither t
 
 ## Configuration
 
-All settings are n8n environment variables. Every setting, with its type, default and allowed range, is in [`config/schema.json`](config/schema.json), and [`config/example.env`](config/example.env) is a starting file. These are the ones that matter most:
+The full guide is **[docs/configuration.md](docs/configuration.md)**. All settings are n8n environment variables. Every setting, with its type, default and allowed range, is in [`config/schema.json`](config/schema.json), and [`config/example.env`](config/example.env) is a starting file. These are the ones that matter most:
 
 | Setting | Default | What it does |
 |---|---|---|
