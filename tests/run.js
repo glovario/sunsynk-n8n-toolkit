@@ -142,6 +142,58 @@ test('blocked crypto gives a clear error', async () => {
   await assert.rejects(run(code(control, 'Sunsynk Login'), { env: { SUNSYNK_USERNAME: 'u', SUNSYNK_PASSWORD: 'p' }, req: blocked }), /NODE_FUNCTION_ALLOW_BUILTIN=crypto/);
 });
 
+// ---- Round 2 P1: armed start must not drift across polls in one dispatch
+test('successive polls in one active dispatch keep the same armed start and write once', async () => {
+  const env = { GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '14:25', GUARD_RESTORE_START: '12:00' };
+  const cfg = await cfgFor(env);
+  const d = [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }];
+  const pstate = {}, gstate = {}; let writes = 0; const starts = [];
+  for (const t of ['14:00', '14:10', '14:20', '14:30', '14:40']) {
+    const p = await run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': { query_ok: true, device_found: true, planned: d } }, state: pstate, now: `2026-11-02T${t}:00Z` });
+    assert.strictEqual(p.mode, 'arm', 'poll ' + t + ' flipped to ' + p.mode);
+    starts.push(p.params.sellTime5);
+    await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state: gstate, http: async () => { writes++; return { ok: true, dry_run: false }; } });
+  }
+  assert.deepStrictEqual([...new Set(starts)], ['14:00']);
+  assert.strictEqual(writes, 3); // one write (3 commands), then no_change on every later poll
+  const p = await run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': { query_ok: true, device_found: true, planned: [] } }, state: pstate, now: '2026-11-02T15:10:00Z' });
+  assert.strictEqual(p.mode, 'restore'); assert.strictEqual(pstate.arm, undefined);
+});
+
+// ---- Round 2 P2: plug gate must fail closed
+for (const [label, http] of [
+  ['timeout', async () => { throw new Error('ETIMEDOUT'); }],
+  ['401', async () => { const e = new Error('Request failed with status code 401'); e.httpCode = '401'; throw e; }],
+  ['unavailable', async () => ({ state: 'unavailable' })],
+  ['empty body', async () => ({})],
+]) {
+  test(`plug gate ${label}: does not arm and writes nothing`, async () => {
+    const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
+    const p = await plan([{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }], '2026-11-02T14:00:00Z');
+    assert.strictEqual(p.mode, 'arm');
+    const sent = [];
+    const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
+      http: async (r) => { if (r.url === 'http://ha/plug') return http(); sent.push(r); return { ok: true }; } });
+    assert.strictEqual(out.action, 'skipped'); assert.strictEqual(out.plugged, null);
+    assert.ok(out.plug_error); assert.match(out.reason, /not arming/); assert.strictEqual(sent.length, 0);
+  });
+}
+test('plug gate unreadable still allows a restore', async () => {
+  const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
+  const p = await plan([], '2026-11-02T14:00:00Z');
+  const sent = [];
+  const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
+    http: async (r) => { if (r.url === 'http://ha/plug') throw new Error('ETIMEDOUT'); sent.push(r); return { ok: true, dry_run: true }; } });
+  assert.strictEqual(out.mode, 'restore'); assert.strictEqual(sent.length, 3);
+});
+test('plug gate on: arms', async () => {
+  const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
+  const p = await plan([{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }], '2026-11-02T14:00:00Z');
+  const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
+    http: async (r) => (r.url === 'http://ha/plug' ? { state: 'on' } : { ok: true, dry_run: true }) });
+  assert.strictEqual(out.mode, 'arm'); assert.strictEqual(out.plugged, true);
+});
+
 (async () => {
   let fail = 0;
   for (const [name, f] of tests) {
