@@ -1,0 +1,71 @@
+{
+  "name": "Sunsynk Evening Sell (template)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "55 17 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Daily 17:55",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "51a6922a-4b7f-5fe4-a379-2ede90e24b9f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sets an evening Sell (export) window on one slot. Dry run by default.\nconst env = $env;\nconst n = Number(env.SELL_SLOT || 6);\nconst start = env.SELL_START || '18:00';\nconst floor = Number(env.SELL_FLOOR_SOC || 50);\nconst enable = String(env.SELL_ENABLED || 'false') === 'true';\nconst dry = String(env.SELL_DRY_RUN ?? 'true').toLowerCase() !== 'false';\nif (!(n >= 1 && n <= 6)) throw new Error('SELL_SLOT must be 1-6');\nif (n === Number(env.GUARD_SLOT || 5)) throw new Error('SELL_SLOT must differ from GUARD_SLOT');\nif (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(start)) throw new Error('SELL_START must be HH:MM');\nif (!(floor >= 20 && floor <= 100)) throw new Error('SELL_FLOOR_SOC must be 20-100');\n// sellTime{n}En behaves differently by firmware: on some it is read-only via the cloud and must be set\n// once on the inverter screen or in the app. Leave SELL_WRITE_ENABLE_FLAG=false unless you have tested it.\nconst calls = [\n  { command: 'set_sell_time', params: { [`sellTime${n}`]: start } },\n  { command: 'set_charge_cap', params: { [`cap${n}`]: floor } },\n  { command: 'set_grid_charge', params: { [`time${n}On`]: '0', [`time${n}on`]: 'false' } },\n];\nif (String(env.SELL_WRITE_ENABLE_FLAG || 'false') === 'true') calls.push({ command: 'set_sell_enable', params: { [`sellTime${n}En`]: enable ? '1' : '0' } });\nconst out = [];\nfor (const c of calls) out.push(await this.helpers.httpRequest({ method: 'POST', url: env.SUNSYNK_CONTROL_URL || 'http://127.0.0.1:5678/webhook/sunsynk-control', json: true,\n  headers: { [env.SUNSYNK_CONTROL_HEADER_NAME || 'X-Control-Key']: env.SUNSYNK_CONTROL_HEADER_VALUE || '' },\n  body: { ...c, sn: env.SUNSYNK_INVERTER_SN, dry_run: dry || !enable } }));\nreturn [{ json: { slot: n, start, floor, enabled: enable, dry_run: dry || !enable, results: out } }];"
+      },
+      "name": "Set Sell Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "821e1d33-8342-5d1b-a405-4cff8ea19724"
+    },
+    {
+      "parameters": {
+        "width": 640,
+        "height": 220,
+        "content": "## Evening Sell\nSets one timer slot to export from `SELL_START`, stopping at `SELL_FLOOR_SOC`. **Off by default** (`SELL_ENABLED=false`, `SELL_DRY_RUN=true`). Uses a different slot from the guard so they don't clash.\nCheck your DNO export limit and your tariff before enabling."
+      },
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -260
+      ],
+      "id": "b5cf25b7-1ede-5eac-a9e4-02a8e7aaec64"
+    }
+  ],
+  "connections": {
+    "Daily 17:55": {
+      "main": [
+        [
+          {
+            "node": "Set Sell Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}

@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sunsynk-n8n-toolkit settings (n8n environment variables)",
+  "type": "object",
+  "required": [
+    "SUNSYNK_USERNAME",
+    "SUNSYNK_PASSWORD",
+    "SUNSYNK_INVERTER_SN"
+  ],
+  "properties": {
+    "NODE_FUNCTION_ALLOW_BUILTIN": {
+      "type": "string",
+      "default": "crypto",
+      "description": "n8n setting (not read by the workflows). Must include 'crypto' or Sunsynk Login fails."
+    },
+    "N8N_BLOCK_ENV_ACCESS_IN_NODE": {
+      "type": "boolean",
+      "default": false,
+      "description": "n8n setting. Must be false so Code nodes can read these settings."
+    },
+    "SUNSYNK_USERNAME": {
+      "type": "string",
+      "description": "Sunsynk Connect login (secret). MFA accounts not supported.",
+      "x-secret": true
+    },
+    "SUNSYNK_PASSWORD": {
+      "type": "string",
+      "x-secret": true
+    },
+    "SUNSYNK_API_HOST": {
+      "enum": [
+        "api.sunsynk.net",
+        "pv.inteless.com"
+      ],
+      "default": "api.sunsynk.net"
+    },
+    "SUNSYNK_INVERTER_SN": {
+      "type": "string",
+      "pattern": "^\\d{6,12}$"
+    },
+    "SUNSYNK_WRITES_ENABLED": {
+      "type": "boolean",
+      "default": false
+    },
+    "SUNSYNK_CONTROL_URL": {
+      "type": "string",
+      "format": "uri",
+      "default": "http://127.0.0.1:5678/webhook/sunsynk-control"
+    },
+    "SUNSYNK_CONTROL_HEADER_NAME": {
+      "type": "string",
+      "default": "X-Control-Key"
+    },
+    "SUNSYNK_CONTROL_HEADER_VALUE": {
+      "type": "string",
+      "x-secret": true
+    },
+    "OCTOPUS_API_KEY": {
+      "type": "string",
+      "x-secret": true,
+      "description": "Required for the guard"
+    },
+    "OCTOPUS_ACCOUNT": {
+      "type": "string",
+      "pattern": "^A-[0-9A-F]+$",
+      "description": "Required for the guard"
+    },
+    "OCTOPUS_EV_DEVICE_ID": {
+      "type": "string",
+      "default": ""
+    },
+    "GUARD_DRY_RUN": {
+      "type": "boolean",
+      "default": true
+    },
+    "GUARD_TIMEZONE": {
+      "type": "string",
+      "default": "Europe/London"
+    },
+    "GUARD_SLOT": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6,
+      "default": 5
+    },
+    "GUARD_PROTECTED_SLOTS": {
+      "type": "string",
+      "default": "1,2,3,4,6",
+      "description": "Comma list; must not include GUARD_SLOT"
+    },
+    "GUARD_CAP_SOC": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 100,
+      "default": 100
+    },
+    "GUARD_RESTORE_START": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "default": "18:00"
+    },
+    "GUARD_RESTORE_CAP_SOC": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 100,
+      "default": 50
+    },
+    "GUARD_RESTORE_GRID_CHARGE": {
+      "type": "boolean",
+      "default": false
+    },
+    "GUARD_OFFPEAK_START": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "default": "23:30"
+    },
+    "GUARD_OFFPEAK_END": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "default": "05:30"
+    },
+    "GUARD_PLUG_STATE_URL": {
+      "type": "string",
+      "default": "",
+      "description": "Optional HA /api/states URL; blank disables the plug gate"
+    },
+    "GUARD_PLUG_ON_STATES": {
+      "type": "string",
+      "default": "on,plugged_in,true"
+    },
+    "GUARD_LEAD_IN_MIN": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 120,
+      "default": 20,
+      "description": "Arm at most this many minutes before an extra dispatch starts. Later dispatches (incl. tomorrow) wait."
+    },
+    "GUARD_SLOT_PREV_START": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "description": "Start time of slot GUARD_SLOT-1 on your inverter. Required when GUARD_DRY_RUN=false."
+    },
+    "GUARD_SLOT_NEXT_START": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "description": "Start time of slot GUARD_SLOT+1 (00:00 if GUARD_SLOT=6). Required when GUARD_DRY_RUN=false."
+    },
+    "OCTOPUS_RETRIES": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "default": 3
+    },
+    "OCTOPUS_RETRY_DELAY_MS": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 2000
+    },
+    "HA_TOKEN": {
+      "type": "string",
+      "x-secret": true,
+      "default": ""
+    },
+    "SELL_ENABLED": {
+      "type": "boolean",
+      "default": false
+    },
+    "SELL_DRY_RUN": {
+      "type": "boolean",
+      "default": true
+    },
+    "SELL_SLOT": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6,
+      "default": 6,
+      "description": "Must differ from GUARD_SLOT"
+    },
+    "SELL_START": {
+      "type": "string",
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+      "default": "18:00"
+    },
+    "SELL_FLOOR_SOC": {
+      "type": "integer",
+      "minimum": 20,
+      "maximum": 100,
+      "default": 50
+    },
+    "SELL_WRITE_ENABLE_FLAG": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

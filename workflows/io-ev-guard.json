@@ -1,0 +1,143 @@
+{
+  "name": "IO EV Guard (template)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "name": "Every 10 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "1503bc89-93db-5f3c-ab55-d8f9febcb64b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Edit these settings (or override with n8n env vars). No secrets here. =====\nconst env = $env;\nconst cfg = {\n  dry_run: String(env.GUARD_DRY_RUN ?? 'true').toLowerCase() !== 'false', // default: dry run ON\n  timezone: env.GUARD_TIMEZONE || 'Europe/London',\n  guard_slot: Number(env.GUARD_SLOT || 5),            // timer slot the guard may use (1-6)\n  guard_cap_soc: Number(env.GUARD_CAP_SOC || 100),    // battery target while an extra dispatch runs\n  restore_start: env.GUARD_RESTORE_START || '18:00',  // slot start time to put back afterwards\n  restore_cap_soc: Number(env.GUARD_RESTORE_CAP_SOC || 50),\n  restore_grid_charge: String(env.GUARD_RESTORE_GRID_CHARGE || 'false') === 'true',\n  offpeak_start: env.GUARD_OFFPEAK_START || '23:30',  // normal IO cheap window (ignored as \"extra\")\n  offpeak_end: env.GUARD_OFFPEAK_END || '05:30',\n  protected_slots: String(env.GUARD_PROTECTED_SLOTS || '1,2,3,4,6').split(',').map(Number), // never written\n  ev_device_id: env.OCTOPUS_EV_DEVICE_ID || '',       // blank = first EV/charger on the account\n  plug_url: env.GUARD_PLUG_STATE_URL || '',           // optional HA state URL for a plugged-in sensor; blank = gate off\n  plug_on_states: String(env.GUARD_PLUG_ON_STATES || 'on,plugged_in,true').split(','),\n  control_url: env.SUNSYNK_CONTROL_URL || 'http://127.0.0.1:5678/webhook/sunsynk-control',\n  inverter_sn: env.SUNSYNK_INVERTER_SN || '',\n  lead_in_min: Number(env.GUARD_LEAD_IN_MIN || 20),   // arm at most this many minutes before an extra dispatch starts\n  slot_prev_start: env.GUARD_SLOT_PREV_START || '',   // start time of slot (GUARD_SLOT - 1) on your inverter\n  slot_next_start: env.GUARD_SLOT_NEXT_START || '',   // start time of slot (GUARD_SLOT + 1); 00:00 if GUARD_SLOT is 6\n};\nconst hm = /^([01]\\d|2[0-3]):[0-5]\\d$/;\nconst errs = [];\nif (!(cfg.guard_slot >= 1 && cfg.guard_slot <= 6)) errs.push('GUARD_SLOT must be 1-6');\nif (cfg.protected_slots.includes(cfg.guard_slot)) errs.push('GUARD_SLOT is listed in GUARD_PROTECTED_SLOTS');\nif (!(cfg.lead_in_min >= 0 && cfg.lead_in_min <= 120)) errs.push('GUARD_LEAD_IN_MIN must be 0-120');\nfor (const k of ['slot_prev_start', 'slot_next_start']) if (cfg[k] && !hm.test(cfg[k])) errs.push(`${k} must be HH:MM`);\nif (!cfg.dry_run && (!cfg.slot_prev_start || !cfg.slot_next_start)) errs.push('Set GUARD_SLOT_PREV_START and GUARD_SLOT_NEXT_START before turning dry run off');\nfor (const k of ['restore_start', 'offpeak_start', 'offpeak_end']) if (!hm.test(cfg[k])) errs.push(`${k} must be HH:MM`);\nfor (const k of ['guard_cap_soc', 'restore_cap_soc']) if (!(cfg[k] >= 10 && cfg[k] <= 100)) errs.push(`${k} must be 10-100`);\nif (!env.OCTOPUS_API_KEY || !env.OCTOPUS_ACCOUNT) errs.push('Set OCTOPUS_API_KEY and OCTOPUS_ACCOUNT env vars');\nif (!/^\\d{6,12}$/.test(cfg.inverter_sn)) errs.push('Set SUNSYNK_INVERTER_SN');\nif (errs.length) throw new Error('Config: ' + errs.join('; '));\nreturn [{ json: cfg }];"
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "82a08ba1-6939-548e-8745-8b1d251f29dc"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reads Intelligent Octopus planned dispatches for the EV/charger. Any brand, not just Tesla.\n// Any API or GraphQL error, or a missing field, throws: an error is never treated as \"no dispatches\".\nconst cfg = $('Config').first().json;\nconst tries = Number($env.OCTOPUS_RETRIES || 3), delay = Number($env.OCTOPUS_RETRY_DELAY_MS ?? 2000);\nasync function gql(label, query, variables, token, pick) {\n  let last;\n  for (let i = 1; i <= tries; i++) {\n    try {\n      const r = await this.helpers.httpRequest({ method: 'POST', url: 'https://api.octopus.energy/v1/graphql/', json: true,\n        headers: token ? { Authorization: token } : {}, body: { query, variables } });\n      if (!r || typeof r !== 'object') throw new Error('empty response');\n      if (Array.isArray(r.errors) && r.errors.length) throw new Error('GraphQL error: ' + r.errors.map((e) => (e && e.message) || 'unknown').join('; '));\n      if (!r.data) throw new Error('no data in response');\n      const v = pick(r.data);\n      if (v === undefined || v === null) throw new Error('expected field missing');\n      return v;\n    } catch (e) { last = e; if (i < tries && delay > 0) await new Promise((res) => setTimeout(res, delay * i)); }\n  }\n  throw new Error(`Octopus ${label} failed after ${tries} tries: ${last && last.message}. Nothing was changed.`);\n}\nconst call = gql.bind(this);\nconst token = await call('token', 'mutation T($k:String!){obtainKrakenToken(input:{APIKey:$k}){token}}', { k: $env.OCTOPUS_API_KEY }, null, (d) => d.obtainKrakenToken && d.obtainKrakenToken.token);\nlet deviceId = cfg.ev_device_id;\nif (!deviceId) {\n  const devs = await call('devices', 'query D($a:String!){devices(accountNumber:$a){id deviceType}}', { a: $env.OCTOPUS_ACCOUNT }, token, (d) => Array.isArray(d.devices) ? d.devices : undefined);\n  const ev = devs.find((x) => x && ['ELECTRIC_VEHICLES', 'CHARGE_POINTS'].includes(x.deviceType));\n  if (!ev) throw new Error('No EV or charger found on the Octopus account. Set OCTOPUS_EV_DEVICE_ID. Nothing was changed.');\n  deviceId = ev.id;\n}\nconst planned = await call('flexPlannedDispatches', 'query F($id:String!){flexPlannedDispatches(deviceId:$id){start end type}}', { id: deviceId }, token, (d) => Array.isArray(d.flexPlannedDispatches) ? d.flexPlannedDispatches : undefined);\nfor (const x of planned) if (!x || isNaN(Date.parse(x.start)) || isNaN(Date.parse(x.end))) throw new Error('Dispatch with bad start/end. Nothing was changed.');\nreturn [{ json: { query_ok: true, device_found: true, planned } }];"
+      },
+      "name": "Octopus Dispatches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "b253a5bf-b236-5e38-b240-bbafd0d34f8c"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Works out \"extra\" dispatches (outside the normal off-peak window) and what slot the guard should set.\nconst cfg = $('Config').first().json;\nconst oct = $('Octopus Dispatches').first().json;\nif (!oct || oct.query_ok !== true || !Array.isArray(oct.planned)) throw new Error('Octopus query did not succeed; refusing to plan. Nothing was changed.');\nconst planned = oct.planned;\nconst TZ = cfg.timezone;\nconst parts = (d) => Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(d).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));\n// Wall-clock time in TZ -> instant. Iterates so it is right on either side of a clock change.\nfunction zoned(y, mo, d, h, mi) { let u = Date.UTC(y, mo - 1, d, h, mi); for (let i = 0; i < 3; i++) { const p = parts(new Date(u)); u += Date.UTC(y, mo - 1, d, h, mi) - Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second); } return new Date(u); }\n// Calendar-day arithmetic on a local date (never \"+24 hours\", which is wrong on clock-change nights).\nconst addDays = (y, mo, d, k) => { const t = new Date(Date.UTC(y, mo - 1, d + k)); return [t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate()]; };\nconst [osh, osm] = cfg.offpeak_start.split(':').map(Number), [oeh, oem] = cfg.offpeak_end.split(':').map(Number);\nconst crossesMidnight = oeh * 60 + oem <= osh * 60 + osm;\nfunction offpeakWindows(a, b) {\n  const pa = parts(a), pb = parts(b), out = [];\n  const last = Date.UTC(+pb.year, +pb.month - 1, +pb.day);\n  for (let k = -1; ; k++) {\n    const [y, mo, d] = addDays(+pa.year, +pa.month, +pa.day, k);\n    if (Date.UTC(y, mo - 1, d) > last + 864e5) break;\n    const s = zoned(y, mo, d, osh, osm);\n    const [ey, emo, ed] = crossesMidnight ? addDays(y, mo, d, 1) : [y, mo, d];\n    out.push({ s, e: zoned(ey, emo, ed, oeh, oem) });\n  }\n  return out;\n}\nlet extras = [];\nfor (const d of planned) {\n  const s = new Date(d.start), e = new Date(d.end); if (!(e > s)) continue;\n  let segs = [{ s, e }];\n  for (const w of offpeakWindows(s, e)) segs = segs.flatMap((x) => (x.e <= w.s || x.s >= w.e) ? [x] : [...(x.s < w.s ? [{ s: x.s, e: w.s }] : []), ...(x.e > w.e ? [{ s: w.e, e: x.e }] : [])]);\n  extras.push(...segs.filter((x) => x.e > x.s));\n}\nextras.sort((a, b) => a.s - b.s);\nconst now = new Date();\nconst leadMs = cfg.lead_in_min * 60000;\n// Timer slots are daily HH:MM with no date, so only arm for a window that is running now or starts within\n// the lead-in. A dispatch later today or tomorrow is left alone until it is close.\nconst active = extras.find((x) => x.e > now && x.s.getTime() - now.getTime() <= leadMs);\nconst upcoming = extras.find((x) => x.e > now && !(x === active));\nconst hhmm = (d) => { const p = parts(d); return `${String(+p.hour % 24).padStart(2, '0')}:${p.minute}`; };\nconst n = cfg.guard_slot;\nconst g = cfg.restore_grid_charge;\nconst restore_params = { [`sellTime${n}`]: cfg.restore_start, [`time${n}On`]: g ? '1' : '0', [`time${n}on`]: g ? 'true' : 'false', [`cap${n}`]: cfg.restore_cap_soc };\n// Slot N is only valid if prev start < its start < next start (slot 6 wraps to 00:00).\nfunction inOrder(t) {\n  if (!cfg.slot_prev_start || !cfg.slot_next_start) return null; // unknown: allowed only in dry run (Config enforces)\n  const next = cfg.slot_next_start === '00:00' ? '24:00' : cfg.slot_next_start;\n  return cfg.slot_prev_start < t && t < next;\n}\nlet mode, params, reason = null;\n// The armed start must stay the same for the whole dispatch: re-clamping to \"now\" on every poll would move it\n// (14:00, 14:10, 14:20...), rewrite the timer each run and could flip to hold once now passes the next slot.\n// Fix it once per dispatch (keyed by the dispatch start) in static data and reuse it on later polls.\nconst pstate = $getWorkflowStaticData('global');\nif (active) {\n  const akey = active.s.toISOString();\n  if (!pstate.arm || pstate.arm.key !== akey) pstate.arm = { key: akey, start: hhmm(active.s > now ? active.s : now) };\n  const start = pstate.arm.start;\n  const ok = inOrder(start);\n  if (ok === false) { mode = 'hold'; params = null; reason = `arm start ${start} is not between slot ${n - 1} (${cfg.slot_prev_start}) and slot ${n + 1} (${cfg.slot_next_start})`; }\n  else { mode = 'arm'; params = { [`sellTime${n}`]: start, [`time${n}On`]: '1', [`time${n}on`]: 'true', [`cap${n}`]: cfg.guard_cap_soc }; if (ok === null) reason = 'slot order not checked (set GUARD_SLOT_PREV_START / GUARD_SLOT_NEXT_START)'; }\n} else {\n  delete pstate.arm;\n  mode = 'restore'; params = restore_params;\n}\nif (mode !== 'hold' && inOrder(restore_params[`sellTime${n}`]) === false) throw new Error('GUARD_RESTORE_START is out of slot order. Nothing was changed.');\n// The dual time{n}On / time{n}on keys are deliberate: some firmware reads one, some the other.\n// Never writes sellTime{n}En or any protected slot.\nreturn [{ json: { mode, reason, extra_count: extras.length, extra_start: active ? active.s.toISOString() : null, extra_end: active ? active.e.toISOString() : null,\n  next_extra_start: upcoming ? upcoming.s.toISOString() : null, params, restore_params, dry_run: cfg.dry_run } }];"
+      },
+      "name": "Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "c1eda737-af7c-5be8-88fc-aee0ac6c2cab"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Optional plug-in gate, then sends the plan to Sunsynk Control (one call per command).\nconst cfg = $('Config').first().json;\nconst plan = $('Plan').first().json;\nconst state = $getWorkflowStaticData('global');\nif (plan.mode === 'hold') return [{ json: { ...plan, action: 'skipped' } }];\nlet plugged = null, plug_error = null;\nif (cfg.plug_url) {\n  try {\n    const s = await this.helpers.httpRequest({ url: cfg.plug_url, json: true, headers: { Authorization: `Bearer ${$env.HA_TOKEN || ''}` } });\n    plugged = (s && typeof s === 'object' && typeof s.state === 'string' && s.state !== 'unavailable' && s.state !== 'unknown')\n      ? cfg.plug_on_states.includes(s.state.toLowerCase()) : null;\n    if (plugged === null) plug_error = 'plug state unreadable: ' + JSON.stringify(s && s.state);\n  } catch (e) { plugged = null; plug_error = 'plug state request failed: ' + ((e && e.message) || 'error'); }\n}\nlet mode = plan.mode;\n// Plug gate configured but state unknown (timeout, 401, HA error): fail closed. Restore the slot and forget the\n// stored dispatch start, so the next readable poll re-arms from scratch.\nlet reason = plan.reason;\nif (mode === 'arm' && cfg.plug_url && plugged === null) { mode = 'restore'; delete state.arm; reason = 'plug gate: ' + plug_error + '; restoring instead of arming'; }\n// Car unplugged: do not arm. Use the real restore settings, not the arm ones.\nif (mode === 'arm' && plugged === false) mode = 'restore';\nconst params = mode === 'arm' ? plan.params : plan.restore_params;\nif (!params) throw new Error('No parameters for mode ' + mode);\n// Only write when something changes (stop marker), so the inverter is not hammered every run.\nconst key = JSON.stringify({ mode, params });\nif (state.last === key) return [{ json: { ...plan, mode, params, plugged, plug_error, reason, action: 'no_change' } }];\nconst n = cfg.guard_slot;\nconst calls = [\n  { command: 'set_sell_time', params: { [`sellTime${n}`]: params[`sellTime${n}`] } },\n  { command: 'set_grid_charge', params: { [`time${n}On`]: params[`time${n}On`], [`time${n}on`]: params[`time${n}on`] } },\n  { command: 'set_charge_cap', params: { [`cap${n}`]: params[`cap${n}`] } },\n];\nconst results = [];\nfor (const c of calls) {\n  results.push(await this.helpers.httpRequest({ method: 'POST', url: cfg.control_url, json: true,\n    headers: { [$env.SUNSYNK_CONTROL_HEADER_NAME || 'X-Control-Key']: $env.SUNSYNK_CONTROL_HEADER_VALUE || '' },\n    body: { ...c, sn: cfg.inverter_sn, dry_run: cfg.dry_run } }));\n}\n// Record the marker only for a real write that Control verified by read-back (ok) and did not dry-run.\nconst written = !cfg.dry_run && results.every((r) => r && r.ok === true && r.dry_run === false);\nif (written) state.last = key; else delete state.last;\nconst action = written ? 'written' : (results.some((r) => r && r.dry_run === true) ? 'dry_run' : 'write_failed');\nreturn [{ json: { ...plan, mode, params, plugged, plug_error, reason, action, results } }];"
+      },
+      "name": "Gate And Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "4cd77075-61bb-5163-913a-fae4173dfea2"
+    },
+    {
+      "parameters": {
+        "width": 900,
+        "height": 260,
+        "content": "## Intelligent Octopus EV guard\nWhen Octopus schedules an **extra** EV charge outside the normal off-peak window, the house battery would otherwise discharge into the car at peak-time rates. This turns on grid charge on ONE timer slot for that window (holding the battery), then puts the slot back.\n**Dry run is ON by default** (`GUARD_DRY_RUN`). Writes also need `SUNSYNK_WRITES_ENABLED=true` on Sunsynk Control.\nWorks with any IO-supported EV or charger. The plug-in gate is optional."
+      },
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -300
+      ],
+      "id": "b5cf25b7-1ede-5eac-a9e4-02a8e7aaec64"
+    }
+  ],
+  "connections": {
+    "Every 10 minutes": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Octopus Dispatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Octopus Dispatches": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan": {
+      "main": [
+        [
+          {
+            "node": "Gate And Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}

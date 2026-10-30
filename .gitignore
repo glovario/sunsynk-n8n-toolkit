@@ -1,0 +1,10 @@
+.env
+*.env
+!config/example.env
+config/local.*
+*.rtf
+*.key
+*.pem
+secrets/
+n8n-data/
+.DS_Store
