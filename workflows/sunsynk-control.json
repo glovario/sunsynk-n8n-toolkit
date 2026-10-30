@@ -1,0 +1,122 @@
+{
+  "name": "Sunsynk Control (template)",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "sunsynk-control",
+        "httpMethod": "POST",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "b4ba0a78-8fad-5d8e-b066-e0ef08ecbbc4",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Sunsynk Control webhook header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validates and gates every write. Writes need SUNSYNK_WRITES_ENABLED=true AND dry_run=false in the request.\nconst b = $('Webhook').first().json.body || {};\nconst writesEnabled = String($env.SUNSYNK_WRITES_ENABLED || 'false').toLowerCase() === 'true';\nconst sn = String(b.sn || $env.SUNSYNK_INVERTER_SN || '');\nif (!/^\\d{6,12}$/.test(sn)) throw new Error('Missing or invalid inverter serial (sn)');\nconst allowed = {\n  set_sell_time: /^sellTime[1-6]$/,\n  set_grid_charge: /^time[1-6](On|on)$/,\n  set_charge_cap: /^cap[1-6]$/,\n  set_sell_enable: /^sellTime[1-6]En$/,\n};\nconst re = allowed[b.command];\nif (!re) throw new Error('Unknown command: ' + b.command);\nconst params = b.params || {};\nfor (const [k, v] of Object.entries(params)) {\n  if (!re.test(k)) throw new Error(`Field ${k} not allowed for ${b.command}`);\n  if (/^sellTime[1-6]$/.test(k) && !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(String(v))) throw new Error(`${k} must be HH:MM`);\n  if (/^cap[1-6]$/.test(k) && !(Number(v) >= 10 && Number(v) <= 100)) throw new Error(`${k} must be 10-100`);\n}\nconst dryRun = b.dry_run !== false || !writesEnabled;\nreturn [{ json: { sn, command: b.command, params, dry_run: dryRun, writes_enabled: writesEnabled } }];"
+      },
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "085f99f4-94fa-5149-8f55-e4107962a957"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sunsynk cloud login. Credentials come ONLY from n8n environment variables.\nconst crypto = require('crypto');\nconst host = $env.SUNSYNK_API_HOST || 'api.sunsynk.net';\nconst username = $env.SUNSYNK_USERNAME;\nconst password = $env.SUNSYNK_PASSWORD;\nif (!username || !password) throw new Error('Set SUNSYNK_USERNAME and SUNSYNK_PASSWORD as n8n environment variables');\nconst state = $getWorkflowStaticData('global');\nconst now = Date.now();\nif (state.bearer && state.expiry && now < state.expiry) return [{ json: { bearer: state.bearer, host } }];\nconst md5 = (s) => crypto.createHash('md5').update(s).digest('hex');\nconst nonce = now;\nconst pk = await this.helpers.httpRequest({ url: `https://${host}/anonymous/publicKey?nonce=${nonce}&source=sunsynk&sign=${md5(`nonce=${nonce}&source=sunsynkPOWER_VIEW`)}`, json: true });\nif (!pk || !pk.success || !pk.data) throw new Error('Sunsynk public key request failed');\nconst pem = `-----BEGIN PUBLIC KEY-----\\n${pk.data.match(/.{1,64}/g).join('\\n')}\\n-----END PUBLIC KEY-----\\n`;\nconst enc = crypto.publicEncrypt({ key: pem, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(password, 'utf8')).toString('base64');\nconst n2 = Date.now();\nconst login = await this.helpers.httpRequest({ method: 'POST', url: `https://${host}/oauth/token/new`, json: true,\n  body: { areaCode: 'sunsynk', client_id: 'csp-web', grant_type: 'password', password: enc, source: 'sunsynk', username, nonce: n2, sign: md5(`nonce=${n2}&source=sunsynk${pk.data.substring(0, 10)}`) } });\nif (!login || !login.success || !login.data || !login.data.access_token) throw new Error('Sunsynk login failed (MFA accounts are not supported)');\nstate.bearer = login.data.access_token;\nstate.expiry = now + login.data.expires_in * 1000 - 60000;\nreturn [{ json: { bearer: state.bearer, host } }];"
+      },
+      "name": "Sunsynk Login",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "95c8244e-d35d-5bcf-ac99-89442e3d36e8"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Writes one settings change, then reads back and compares. Skipped entirely in dry run.\nconst v = $('Validate Request').first().json;\nconst { bearer, host } = $('Sunsynk Login').first().json;\nif (v.dry_run) return [{ json: { ok: true, dry_run: true, would_write: v.params, command: v.command } }];\nconst headers = { Authorization: `Bearer ${bearer}` };\nconst set = await this.helpers.httpRequest({ method: 'POST', url: `https://${host}/api/v1/common/setting/${v.sn}/set`, headers, body: v.params, json: true });\nconst read = await this.helpers.httpRequest({ url: `https://${host}/api/v1/common/setting/${v.sn}/read`, headers, json: true });\nconst now = (read && read.data) || {};\n// Some firmware accepts a write (\"success\") but ignores it. Trust the read-back, not the reply.\nconst mismatches = Object.entries(v.params).filter(([k, want]) => {\n  const keys = [k, k.replace(/On$/, 'on'), k.replace(/on$/, 'On')];\n  const got = keys.map((x) => now[x]).find((x) => x !== undefined);\n  return String(got) !== String(want) && !(String(want) === '1' && String(got) === 'true') && !(String(want) === '0' && String(got) === 'false');\n}).map(([k]) => k);\nreturn [{ json: { ok: mismatches.length === 0, dry_run: false, command: v.command, set_reply_success: Boolean(set && set.success), mismatches } }];"
+      },
+      "name": "Write And Verify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "80c084af-a6c2-5d00-b057-d0c595ae4245"
+    },
+    {
+      "parameters": {
+        "width": 640,
+        "height": 220,
+        "content": "## Sunsynk Control\nOne endpoint for all inverter writes. **Off by default**: nothing is written unless the n8n env var `SUNSYNK_WRITES_ENABLED=true` AND the request sets `\"dry_run\": false`.\nOnly timer fields are allowed (sellTimeN, timeNOn/timeNon, capN, sellTimeNEn). Every write is read back.\nProtect the webhook with Header Auth."
+      },
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -260
+      ],
+      "id": "b5cf25b7-1ede-5eac-a9e4-02a8e7aaec64"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Sunsynk Login",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sunsynk Login": {
+      "main": [
+        [
+          {
+            "node": "Write And Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}

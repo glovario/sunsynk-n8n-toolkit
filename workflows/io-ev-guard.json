@@ -1,0 +1,143 @@
+{
+  "name": "IO EV Guard (template)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "name": "Every 10 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "1503bc89-93db-5f3c-ab55-d8f9febcb64b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Edit these settings (or override with n8n env vars). No secrets here. =====\nconst env = $env;\nconst cfg = {\n  dry_run: String(env.GUARD_DRY_RUN ?? 'true').toLowerCase() !== 'false', // default: dry run ON\n  timezone: env.GUARD_TIMEZONE || 'Europe/London',\n  guard_slot: Number(env.GUARD_SLOT || 5),            // timer slot the guard may use (1-6)\n  guard_cap_soc: Number(env.GUARD_CAP_SOC || 100),    // battery target while an extra dispatch runs\n  restore_start: env.GUARD_RESTORE_START || '18:00',  // slot start time to put back afterwards\n  restore_cap_soc: Number(env.GUARD_RESTORE_CAP_SOC || 50),\n  restore_grid_charge: String(env.GUARD_RESTORE_GRID_CHARGE || 'false') === 'true',\n  offpeak_start: env.GUARD_OFFPEAK_START || '23:30',  // normal IO cheap window (ignored as \"extra\")\n  offpeak_end: env.GUARD_OFFPEAK_END || '05:30',\n  protected_slots: String(env.GUARD_PROTECTED_SLOTS || '1,2,3,4,6').split(',').map(Number), // never written\n  ev_device_id: env.OCTOPUS_EV_DEVICE_ID || '',       // blank = first EV/charger on the account\n  plug_url: env.GUARD_PLUG_STATE_URL || '',           // optional HA state URL for a plugged-in sensor; blank = gate off\n  plug_on_states: String(env.GUARD_PLUG_ON_STATES || 'on,plugged_in,true').split(','),\n  control_url: env.SUNSYNK_CONTROL_URL || 'http://127.0.0.1:5678/webhook/sunsynk-control',\n  inverter_sn: env.SUNSYNK_INVERTER_SN || '',\n};\nconst hm = /^([01]\\d|2[0-3]):[0-5]\\d$/;\nconst errs = [];\nif (!(cfg.guard_slot >= 1 && cfg.guard_slot <= 6)) errs.push('GUARD_SLOT must be 1-6');\nif (cfg.protected_slots.includes(cfg.guard_slot)) errs.push('GUARD_SLOT is listed in GUARD_PROTECTED_SLOTS');\nfor (const k of ['restore_start', 'offpeak_start', 'offpeak_end']) if (!hm.test(cfg[k])) errs.push(`${k} must be HH:MM`);\nfor (const k of ['guard_cap_soc', 'restore_cap_soc']) if (!(cfg[k] >= 10 && cfg[k] <= 100)) errs.push(`${k} must be 10-100`);\nif (!env.OCTOPUS_API_KEY || !env.OCTOPUS_ACCOUNT) errs.push('Set OCTOPUS_API_KEY and OCTOPUS_ACCOUNT env vars');\nif (!/^\\d{6,12}$/.test(cfg.inverter_sn)) errs.push('Set SUNSYNK_INVERTER_SN');\nif (errs.length) throw new Error('Config: ' + errs.join('; '));\nreturn [{ json: cfg }];"
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "82a08ba1-6939-548e-8745-8b1d251f29dc"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reads Intelligent Octopus planned dispatches for the EV/charger. Any brand, not just Tesla.\nconst cfg = $('Config').first().json;\nconst gql = (query, variables, token) => this.helpers.httpRequest({ method: 'POST', url: 'https://api.octopus.energy/v1/graphql/', json: true,\n  headers: token ? { Authorization: token } : {}, body: { query, variables } });\nconst t = await gql('mutation T($k:String!){obtainKrakenToken(input:{APIKey:$k}){token}}', { k: $env.OCTOPUS_API_KEY });\nconst token = t && t.data && t.data.obtainKrakenToken && t.data.obtainKrakenToken.token;\nif (!token) throw new Error('Octopus token request failed');\nlet deviceId = cfg.ev_device_id;\nif (!deviceId) {\n  const d = await gql('query D($a:String!){devices(accountNumber:$a){id deviceType}}', { a: $env.OCTOPUS_ACCOUNT }, token);\n  const devs = (d && d.data && d.data.devices) || [];\n  const ev = devs.find((x) => ['ELECTRIC_VEHICLES', 'CHARGE_POINTS'].includes(x.deviceType));\n  if (!ev) return [{ json: { device_found: false, planned: [] } }];\n  deviceId = ev.id;\n}\nconst p = await gql('query F($id:String!){flexPlannedDispatches(deviceId:$id){start end type}}', { id: deviceId }, token);\nreturn [{ json: { device_found: true, planned: (p && p.data && p.data.flexPlannedDispatches) || [] } }];"
+      },
+      "name": "Octopus Dispatches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "b253a5bf-b236-5e38-b240-bbafd0d34f8c"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Works out \"extra\" dispatches (outside the normal off-peak window) and what slot the guard should set.\nconst cfg = $('Config').first().json;\nconst { planned, device_found } = $('Octopus Dispatches').first().json;\nconst TZ = cfg.timezone;\nconst parts = (d) => Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(d).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));\nfunction zoned(y, mo, d, h, mi) { let u = Date.UTC(y, mo - 1, d, h, mi); for (let i = 0; i < 3; i++) { const p = parts(new Date(u)); u += Date.UTC(y, mo - 1, d, h, mi) - Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second); } return new Date(u); }\nconst [osh, osm] = cfg.offpeak_start.split(':').map(Number), [oeh, oem] = cfg.offpeak_end.split(':').map(Number);\nfunction offpeakWindows(a, b) { const out = []; for (let t = a.getTime() - 864e5; t <= b.getTime() + 864e5; t += 864e5) { const p = parts(new Date(t)); const s = zoned(+p.year, +p.month, +p.day, osh, osm); const e0 = zoned(+p.year, +p.month, +p.day, oeh, oem); out.push({ s, e: e0 <= s ? new Date(e0.getTime() + 864e5) : e0 }); } return out; }\nlet extras = [];\nfor (const d of planned || []) {\n  const s = new Date(d.start), e = new Date(d.end); if (!(e > s)) continue;\n  let segs = [{ s, e }];\n  for (const w of offpeakWindows(s, e)) segs = segs.flatMap((x) => (x.e <= w.s || x.s >= w.e) ? [x] : [...(x.s < w.s ? [{ s: x.s, e: w.s }] : []), ...(x.e > w.e ? [{ s: w.e, e: x.e }] : [])]);\n  extras.push(...segs.filter((x) => x.e > x.s));\n}\nextras.sort((a, b) => a.s - b.s);\nconst now = new Date();\nconst active = extras.find((x) => x.e > now);\nconst hhmm = (d) => { const p = parts(d); return `${p.hour}:${p.minute}`; };\nconst n = cfg.guard_slot;\nlet mode, params;\nif (active) {\n  mode = 'arm';\n  params = { [`sellTime${n}`]: hhmm(active.s), [`time${n}On`]: '1', [`time${n}on`]: 'true', [`cap${n}`]: cfg.guard_cap_soc };\n} else {\n  mode = 'restore';\n  const g = cfg.restore_grid_charge;\n  params = { [`sellTime${n}`]: cfg.restore_start, [`time${n}On`]: g ? '1' : '0', [`time${n}on`]: g ? 'true' : 'false', [`cap${n}`]: cfg.restore_cap_soc };\n}\n// The dual time{n}On / time{n}on keys are deliberate: some firmware reads one, some the other.\n// Never writes sellTime{n}En or any protected slot.\nreturn [{ json: { mode, device_found, extra_count: extras.length, extra_start: active ? active.s.toISOString() : null, extra_end: active ? active.e.toISOString() : null, params, dry_run: cfg.dry_run } }];"
+      },
+      "name": "Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "c1eda737-af7c-5be8-88fc-aee0ac6c2cab"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Optional plug-in gate, then sends the plan to Sunsynk Control (one call per command).\nconst cfg = $('Config').first().json;\nconst plan = $('Plan').first().json;\nconst state = $getWorkflowStaticData('global');\nlet plugged = null;\nif (cfg.plug_url) {\n  try {\n    const s = await this.helpers.httpRequest({ url: cfg.plug_url, json: true, headers: { Authorization: `Bearer ${$env.HA_TOKEN || ''}` } });\n    plugged = cfg.plug_on_states.includes(String(s.state).toLowerCase());\n  } catch (e) { plugged = null; }\n}\nlet mode = plan.mode;\nif (mode === 'arm' && plugged === false) mode = 'restore';\n// Only write when something changes (stop marker), so the inverter is not hammered every run.\nconst key = JSON.stringify(mode === 'arm' ? plan.params : { restore: true });\nif (state.last === key) return [{ json: { ...plan, mode, plugged, action: 'no_change' } }];\nconst n = cfg.guard_slot;\nconst calls = [\n  { command: 'set_sell_time', params: { [`sellTime${n}`]: plan.params[`sellTime${n}`] } },\n  { command: 'set_grid_charge', params: { [`time${n}On`]: plan.params[`time${n}On`], [`time${n}on`]: plan.params[`time${n}on`] } },\n  { command: 'set_charge_cap', params: { [`cap${n}`]: plan.params[`cap${n}`] } },\n];\nconst results = [];\nfor (const c of calls) {\n  results.push(await this.helpers.httpRequest({ method: 'POST', url: cfg.control_url, json: true,\n    headers: { [$env.SUNSYNK_CONTROL_HEADER_NAME || 'X-Control-Key']: $env.SUNSYNK_CONTROL_HEADER_VALUE || '' },\n    body: { ...c, sn: cfg.inverter_sn, dry_run: cfg.dry_run } }));\n}\nif (!cfg.dry_run && results.every((r) => r && r.ok)) state.last = key;\nreturn [{ json: { ...plan, mode, plugged, action: cfg.dry_run ? 'dry_run' : 'written', results } }];"
+      },
+      "name": "Gate And Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "4cd77075-61bb-5163-913a-fae4173dfea2"
+    },
+    {
+      "parameters": {
+        "width": 900,
+        "height": 260,
+        "content": "## Intelligent Octopus EV guard\nWhen Octopus schedules an **extra** EV charge outside the normal off-peak window, the house battery would otherwise discharge into the car at peak-time rates. This turns on grid charge on ONE timer slot for that window (holding the battery), then puts the slot back.\n**Dry run is ON by default** (`GUARD_DRY_RUN`). Writes also need `SUNSYNK_WRITES_ENABLED=true` on Sunsynk Control.\nWorks with any IO-supported EV or charger. The plug-in gate is optional."
+      },
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -300
+      ],
+      "id": "b5cf25b7-1ede-5eac-a9e4-02a8e7aaec64"
+    }
+  ],
+  "connections": {
+    "Every 10 minutes": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Octopus Dispatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Octopus Dispatches": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan": {
+      "main": [
+        [
+          {
+            "node": "Gate And Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}
