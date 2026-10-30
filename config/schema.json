@@ -86,7 +86,7 @@
     "GUARD_PROTECTED_SLOTS": {
       "type": "string",
       "default": "1,2,3,4,6",
-      "description": "Comma list; must not include GUARD_SLOT"
+      "description": "Slots the IO EV Guard must never modify. Comma list; must not include GUARD_SLOT. Evening Sell and Sunsynk Control do not read it."
     },
     "GUARD_CAP_SOC": {
       "type": "integer",
