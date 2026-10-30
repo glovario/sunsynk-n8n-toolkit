@@ -232,6 +232,7 @@ Not affiliated with Sunsynk, Deye, Inteless or Octopus Energy. You use it at you
 
 Issues and pull requests are welcome. Reports of how your inverter and firmware behave are especially useful (see the timer quirks).
 
+- To report a problem, use the [bug report form](https://github.com/glovario/sunsynk-n8n-toolkit/issues/new?template=bug_report.yml). For ideas, use the [feature request form](https://github.com/glovario/sunsynk-n8n-toolkit/issues/new?template=feature_request.yml). The templates are in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Remove any secrets before posting.
 - Please run `node tests/run.js` before opening a PR, and add a test for any change to a Code node.
 - Never commit a `.env` file or any credentials.
 
