@@ -7,7 +7,7 @@ Every setting the toolkit reads, where it lives, and how to go from dry run to l
 - **What goes where.** User-specific config and secrets (logins, inverter serial, device IDs, URLs, tokens, switches) go in **environment variables**. Workflow defaults are **embedded in the Code nodes** (the `env.X || default` fallbacks), so an unset variable uses the default listed below.
 - **Environment variables.**
   - Every setting is read from n8n **environment variables** through `$env` in the Code nodes.
-  - The workflow JSON holds no settings and no secrets.
+  - The workflow JSON contains only built-in defaults; no user-specific settings or credentials are stored there.
   - n8n can't read them unless `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - **n8n Variables** (the `$vars` feature) are **not used**. Values set there are ignored.
 - **The Home Assistant token** is also read from an environment variable, `HA_TOKEN`. Nothing is read from Home Assistant's `secrets.yaml`. The guard only calls the URL you give it, with `Authorization: Bearer <HA_TOKEN>`.

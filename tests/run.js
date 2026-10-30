@@ -514,12 +514,10 @@ function checkValue(key, value, spec, required) {
   if (spec.format === 'uri' && !/^https?:\/\/\S+$/.test(value)) return 'not a URL';
   return null;
 }
-test('config/example.env parses like docker --env-file and every value matches config/schema.json', async () => {
-  const root = path.join(__dirname, '..');
-  const schema = JSON.parse(fs.readFileSync(path.join(root, 'config', 'schema.json'), 'utf8'));
-  const entries = parseEnvFile(fs.readFileSync(path.join(root, 'config', 'example.env'), 'utf8'));
+// Returns every problem with an env-file's content measured against the schema (empty = OK).
+function checkEnvAgainstSchema(content, schema) {
   const errs = [], seen = new Set();
-  for (const { line, key, value } of entries) {
+  for (const { line, key, value } of parseEnvFile(content)) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key)) errs.push(`line ${line}: bad key ${JSON.stringify(key)}`);
     if (seen.has(key)) errs.push(`line ${line}: ${key} repeated`); seen.add(key);
     const spec = schema.properties[key];
@@ -527,8 +525,21 @@ test('config/example.env parses like docker --env-file and every value matches c
     const e = checkValue(key, value, spec, (schema.required || []).includes(key));
     if (e) errs.push(`line ${line}: ${key}=${JSON.stringify(value)} ${e}`);
   }
-  for (const k of schema.required || []) if (!seen.has(k)) errs.push(`required ${k} missing`);
-  assert.deepStrictEqual(errs, []);
+  // Both directions: every schema key, required or optional, must appear in the env file.
+  for (const k of Object.keys(schema.properties)) if (!seen.has(k)) errs.push(`${(schema.required || []).includes(k) ? 'required' : 'optional'} ${k} in schema.json but missing from example.env`);
+  return errs;
+}
+const readSchema = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'schema.json'), 'utf8'));
+const readExampleEnv = () => fs.readFileSync(path.join(__dirname, '..', 'config', 'example.env'), 'utf8');
+test('config/example.env parses like docker --env-file and every value matches config/schema.json', async () => {
+  assert.deepStrictEqual(checkEnvAgainstSchema(readExampleEnv(), readSchema()), []);
+});
+test('schema/example check fails when example.env omits an optional schema key (GUARD_ALERT_WORKFLOW_ID)', async () => {
+  const schema = readSchema();
+  assert.ok(schema.properties.GUARD_ALERT_WORKFLOW_ID && !(schema.required || []).includes('GUARD_ALERT_WORKFLOW_ID'));
+  const content = readExampleEnv().split('\n').filter((l) => !l.startsWith('GUARD_ALERT_WORKFLOW_ID=')).join('\n');
+  const errs = checkEnvAgainstSchema(content, schema);
+  assert.ok(errs.some((e) => e.includes('GUARD_ALERT_WORKFLOW_ID')), `expected a missing-key error, got ${JSON.stringify(errs)}`);
 });
 test('env-file parser keeps inline comments in the value, as docker does', async () => {
   const [e] = parseEnvFile('# c\n\nA=1   # note\n');
