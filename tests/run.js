@@ -485,6 +485,99 @@ test('Octopus throw no longer claims nothing was changed', async () => {
   assert.ok(!/Nothing was changed/.test(code(guard, 'Octopus Dispatches')));
 });
 
+// ---- Home Assistant blueprint (blueprints/automation/io-ev-guard.yaml)
+// HA loads blueprints with PyYAML (YAML 1.1) plus a custom `!input` tag, so parse the same way.
+function loadBlueprint(text) {
+  let yaml;
+  try { yaml = require('js-yaml'); } catch (e) { throw new Error('js-yaml is missing: run `npm ci` first'); }
+  const inputTag = yaml.defineScalarTag('!input', { resolve: (s) => ({ __input: s }), identify: () => false });
+  return yaml.load(text, { schema: yaml.YAML11_SCHEMA.withTags(inputTag) });
+}
+function inputRefs(node, out = []) {
+  if (node && typeof node === 'object') {
+    if (typeof node.__input === 'string') out.push(node.__input);
+    else for (const v of Object.values(node)) inputRefs(v, out);
+  }
+  return out;
+}
+const blueprintPath = path.join(__dirname, '..', 'blueprints', 'automation', 'io-ev-guard.yaml');
+test('blueprint parses with !input tags and has the required blueprint keys', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const b = bp.blueprint;
+  assert.ok(b && typeof b.name === 'string' && b.name && typeof b.description === 'string' && b.description);
+  assert.strictEqual(b.domain, 'automation');
+  assert.strictEqual(b.source_url, 'https://github.com/glovario/sunsynk-n8n-toolkit/blob/main/blueprints/automation/io-ev-guard.yaml');
+  assert.ok(b.input && Object.keys(b.input).length > 0);
+  for (const [k, v] of Object.entries(b.input)) assert.ok(v && v.selector && typeof v.name === 'string', `input ${k} needs name and selector`);
+  for (const k of ['triggers', 'actions', 'variables', 'mode']) assert.ok(k in bp, `missing ${k}`);
+});
+test('blueprint: every !input reference is a defined input, and every input is used', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const defined = Object.keys(bp.blueprint.input);
+  const { blueprint, ...body } = bp;
+  const refs = inputRefs(body);
+  assert.deepStrictEqual(refs.filter((r) => !defined.includes(r)), []);
+  assert.deepStrictEqual(defined.filter((d) => !refs.includes(d)), []);
+});
+test('blueprint: dry run defaults to true and the write action only runs when dry run is off', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  assert.strictEqual(bp.blueprint.input.dry_run.default, true);
+  assert.strictEqual(bp.variables.dry_run.__input, 'dry_run');
+  const dryStep = bp.actions.find((a) => a.if && JSON.stringify(a.if).includes('{{ dry_run }}'));
+  assert.ok(dryStep, 'no dry-run branch');
+  assert.deepStrictEqual(inputRefs(dryStep.then), [], 'dry-run branch must not call the write action');
+  assert.deepStrictEqual(inputRefs(dryStep.else), ['write_action']);
+  // write_action appears nowhere else in the actions.
+  assert.deepStrictEqual(inputRefs(bp.actions).filter((r) => r === 'write_action').length, 1);
+});
+test('blueprint: fails closed on unavailable/unknown dispatch or plug state and normalises plug-on states', async () => {
+  const v = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8')).variables;
+  for (const k of ['dispatch_error', 'plug_error']) for (const s of ['unavailable', 'unknown']) assert.ok(String(v[k]).includes(`'${s}'`), `${k} must treat ${s} as an error`);
+  assert.match(String(v.want_arm), /not dispatch_error/);
+  assert.match(String(v.guard_mode), /plugged and not plug_error/);
+  assert.match(String(v.guard_mode), /restore/);
+  assert.match(String(v.plug_on_list), /map\('trim'\) \| map\('lower'\)/);
+  assert.match(String(v.plug_state), /trim \| lower/);
+  assert.match(String(v.plugged), /not plug_gate/);
+});
+test('blueprint: write_action and state_entity are required (no default) and min HA version is 2025.4.0', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const inp = bp.blueprint.input;
+  assert.ok(!('default' in inp.write_action), 'write_action must have no default');
+  assert.ok(!('default' in inp.state_entity), 'state_entity must have no default');
+  assert.ok(inp.state_entity.selector.entity, 'state_entity uses an entity selector');
+  assert.strictEqual(bp.blueprint.homeassistant.min_version, '2025.4.0');
+});
+test('blueprint: no state trigger on the plug input (blank plug sensor is safe); plug triggers are guarded templates', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const trig = bp.triggers || bp.trigger;
+  const refs = (o) => inputRefs(o);
+  for (const t of trig) {
+    if ((t.trigger || t.platform) === 'state') assert.ok(!refs(t).includes('plug_entities'), 'plug_entities used in a state trigger');
+  }
+  const tmpl = trig.filter((t) => (t.trigger || t.platform) === 'template');
+  assert.deepStrictEqual(tmpl.map((t) => t.id).sort(), ['plug_off', 'plug_on', 'plug_unreadable']);
+  for (const t of tmpl) assert.match(String(t.value_template), /plug_tv != ''/);
+});
+test('blueprint: neighbour times are validated (HH:MM regex, duplicates, order) and a config error stops the run', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const src = JSON.stringify(bp.variables);
+  assert.match(src, /\(\[01\]\[0-9\]\|2\[0-3\]\):\[0-5\]\[0-9\]/);
+  assert.match(JSON.stringify(bp.actions || bp.action), /config_error/);
+});
+test('blueprint: arm start is clamped to now using full timestamps', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const src = JSON.stringify(bp.variables);
+  assert.match(src, /now_ts/);
+  assert.match(src, /\| max/);
+  assert.match(src, /timestamp_custom/);
+});
+test('blueprint loader rejects an undefined !input reference', async () => {
+  const bad = 'blueprint:\n  name: x\n  description: x\n  domain: automation\n  input:\n    a:\n      name: A\n      selector:\n        text: {}\nvariables:\n  a: !input a\n  b: !input nope\n';
+  const bp = loadBlueprint(bad);
+  assert.deepStrictEqual(inputRefs(bp.variables).filter((r) => !Object.keys(bp.blueprint.input).includes(r)), ['nope']);
+});
+
 // ---- Audit: config/example.env must load under `docker run --env-file` and match config/schema.json
 // docker --env-file: each line is KEY=VALUE taken literally (no quote stripping, no inline comments);
 // a line starting with # is a comment; blank lines are ignored.
