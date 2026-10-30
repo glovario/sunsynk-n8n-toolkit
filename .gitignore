@@ -8,3 +8,4 @@ config/local.*
 secrets/
 n8n-data/
 .DS_Store
+node_modules/

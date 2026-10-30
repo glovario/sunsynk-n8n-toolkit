@@ -1,0 +1,12 @@
+{
+  "name": "sunsynk-n8n-toolkit",
+  "private": true,
+  "description": "Offline tests for the sunsynk-n8n-toolkit workflows and Home Assistant blueprint",
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/run.js"
+  },
+  "devDependencies": {
+    "js-yaml": "5.5.0"
+  }
+}

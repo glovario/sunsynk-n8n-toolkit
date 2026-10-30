@@ -19,6 +19,7 @@ Three [n8n](https://n8n.io) workflows that change the timer settings on a **Suns
 - [Troubleshooting](docs/troubleshooting.md)
 - [FAQ](docs/faq.md)
 - [Timer quirks](docs/timer-quirks.md)
+- [Home Assistant blueprint](docs/blueprint.md): the IO EV Guard decision as a Home Assistant automation (not live-tested)
 - [Validation status](docs/validation-status.md): what has not yet been confirmed on real hardware
 - [Changelog](CHANGELOG.md): notable changes, PR by PR
 
@@ -194,7 +195,7 @@ The Sunsynk timer has some odd behaviour: two spellings of grid charge, "success
 
 What still needs a live run is listed in **[Validation status](docs/validation-status.md)**.
 
-- **Offline tests** run on every push and pull request in [CI](.github/workflows/ci.yml) (see the badge above). Run them locally with `node tests/run.js`.
+- **Offline tests** run on every push and pull request in [CI](.github/workflows/ci.yml) (see the badge above). Run them locally with `npm ci` then `node tests/run.js`.
   - The tests run the real Code-node source from the workflow files with mocked n8n, Octopus, Sunsynk and Home Assistant replies. No network or inverter is needed.
   - They cover: arming then unplugging, dry run then writes on, Octopus errors and retries, dispatches later today and tomorrow, slot order, both UK clock changes, a stable start time across polls, plug-state failures, and blocked `crypto`.
 - **Live integration test: pending.** The workflows haven't yet been run end to end against a real inverter. Not yet tested:
@@ -240,7 +241,7 @@ Not affiliated with Sunsynk, Deye, Inteless or Octopus Energy. You use it at you
 Issues and pull requests are welcome. Reports of how your inverter and firmware behave are especially useful (see the timer quirks).
 
 - To report a problem, use the [bug report form](https://github.com/glovario/sunsynk-n8n-toolkit/issues/new?template=bug_report.yml). For ideas, use the [feature request form](https://github.com/glovario/sunsynk-n8n-toolkit/issues/new?template=feature_request.yml). The templates are in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Remove any secrets before posting.
-- Please run `node tests/run.js` before opening a PR, and add a test for any change to a Code node.
+- Please run `npm ci` and `node tests/run.js` before opening a PR, and add a test for any change to a Code node.
 - Never commit a `.env` file or any credentials.
 
 ## Licence

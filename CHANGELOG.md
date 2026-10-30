@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs/validation-status.md`, which lists what has not yet been confirmed on a live system. Merged 2026-10-30 ([#6](https://github.com/glovario/sunsynk-n8n-toolkit/pull/6)).
 - Tests that parse `config/example.env` the way `docker --env-file` does and check every value against `config/schema.json`, in both directions. Merged 2026-10-30 ([#6](https://github.com/glovario/sunsynk-n8n-toolkit/pull/6)).
 
+- Home Assistant automation blueprint for the IO EV Guard (`blueprints/automation/io-ev-guard.yaml`) and `docs/blueprint.md`. It is dry run by default, fails closed and is not live-tested. Offline structure tests use js-yaml, a new devDependency, and CI now runs `npm ci`. (pending, PR #8)
+
 ### Changed
 
 - README rewritten with the problem, each workflow's triggers, inputs and outputs, a diagram, prerequisites, quick start and a configuration reference. Merged 2026-10-30 ([#1](https://github.com/glovario/sunsynk-n8n-toolkit/pull/1), [#2](https://github.com/glovario/sunsynk-n8n-toolkit/pull/2)).

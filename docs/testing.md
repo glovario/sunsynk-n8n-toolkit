@@ -3,10 +3,11 @@
 ## Offline tests
 
 ```sh
+npm ci   # installs js-yaml, used for the blueprint checks
 node tests/run.js
 ```
 
-- **What you need:** Node.js only, with no npm packages. The minimum Node version is **TBD**. The tests use `async`, `??` and `assert.match`, so Node 16 or later is likely.
+- **What you need:** Node.js plus one dev dependency, js-yaml (pinned in `package.json` and `package-lock.json`, installed with `npm ci`), used only by the blueprint checks. The minimum Node version is **TBD**. The tests use `async`, `??` and `assert.match`, so Node 16 or later is likely.
 - **What it does:** it loads the real Code-node source from `workflows/*.json` and runs it with mocked n8n globals (`$`, `$env`, `$getWorkflowStaticData`, `this.helpers.httpRequest`) and a fixed clock.
 - **Network:** nothing goes to the network or to an inverter.
 - **Exit code:** 0 when every test passes, 1 otherwise.
