@@ -14,6 +14,8 @@ blueprint:
     the toolkit's Sunsynk Control webhook). Not live-tested; see
     docs/blueprint.md.
   domain: automation
+  homeassistant:
+    min_version: "2025.4.0"
   source_url: https://github.com/glovario/sunsynk-n8n-toolkit/blob/main/blueprints/automation/io-ev-guard.yaml
   input:
     dispatch_entity:
@@ -57,15 +59,19 @@ blueprint:
     slot_prev_start:
       name: Previous slot start (optional)
       description: >-
-        Start time of the slot before the guard slot (slot 6 for slot 1). If
-        both neighbours are set, an arm start outside them is held (nothing is
-        written), as in the n8n guard. Leave blank to skip the check.
+        Start time of the slot before the guard slot (slot 6 for slot 1), HH:MM
+        (for example 09:00, not 9:00). If both neighbours are set, an arm start
+        outside them is held (nothing is written), as in the n8n guard. Blank
+        skips the check, but only in dry run: live mode needs both. A malformed
+        or duplicate time stops the automation with an error, writing nothing.
       default: ""
       selector:
         text: {}
     slot_next_start:
       name: Next slot start (optional)
-      description: Start time of the slot after the guard slot (slot 1 for slot 6), HH:MM.
+      description: >-
+        Start time of the slot after the guard slot (slot 1 for slot 6), HH:MM.
+        Must differ from the previous slot start.
       default: ""
       selector:
         text: {}
@@ -120,26 +126,76 @@ blueprint:
       description: >-
         Action run to write the slot. It receives the variables slot, start
         (HH:MM), grid_charge (true/false), cap (10-100) and guard_mode
-        (arm/restore). Example in docs/blueprint.md.
-      default: []
+        (arm/restore). Required, with no default. After it has read the slot
+        back and checked it, it must set the variable write_verified to true
+        (a variables action); otherwise, including an empty action, a live
+        run stops with an error and the write is not recorded. Example in
+        docs/blueprint.md.
       selector:
         action: {}
+    state_entity:
+      name: Guard state helper
+      description: >-
+        An input_text helper (max length 100 or more) that only this automation
+        uses. It keeps the chosen arm start for the current dispatch and the
+        last verified write, so both survive a Home Assistant restart. Do not
+        edit it by hand.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+    resync_hours:
+      name: Rewrite after (hours)
+      description: >-
+        An identical write is skipped only if the last verified write is newer
+        than this. After that the slot is written again, in case it was changed
+        on the inverter or in the app. 0 = never skip.
+      default: 6
+      selector:
+        number:
+          min: 0
+          max: 48
+          mode: box
 
 mode: queued
 max: 5
 
+# Inputs needed by the plug triggers. Trigger templates can only see trigger_variables (limited templates).
+trigger_variables:
+  plug_entities_tv: !input plug_entities
+  plug_on_states_tv: !input plug_on_states
+  plug_tv: "{{ (plug_entities_tv if plug_entities_tv is list else [plug_entities_tv]) | select | first | default('') }}"
+  plug_on_tv: "{{ plug_on_states_tv.split(',') | map('trim') | map('lower') | select | list }}"
+
 # `to: ~` fires on state changes only, not on attribute updates, so the slot isn't rewritten every refresh.
+# The plug sensor is optional, so it is watched with three template triggers (plugged, unplugged, unreadable)
+# instead of a state trigger with a possibly empty entity_id. Each change between those states fires exactly
+# one of them, including going unavailable and recovering. With no plug sensor they never fire.
 triggers:
   - trigger: state
     entity_id: !input dispatch_entity
     to: ~
-  - trigger: state
-    entity_id: !input plug_entities
-    to: ~
+  - trigger: template
+    id: plug_unreadable
+    value_template: >-
+      {{ plug_tv != '' and (states(plug_tv) | string | trim | lower) in ['unavailable', 'unknown', 'none', ''] }}
+  - trigger: template
+    id: plug_on
+    value_template: >-
+      {% set s = (states(plug_tv) | string | trim | lower) if plug_tv != '' else '' %}
+      {{ s not in ['unavailable', 'unknown', 'none', ''] and s in plug_on_tv }}
+  - trigger: template
+    id: plug_off
+    value_template: >-
+      {% set s = (states(plug_tv) | string | trim | lower) if plug_tv != '' else '' %}
+      {{ s not in ['unavailable', 'unknown', 'none', ''] and s not in plug_on_tv }}
   - trigger: time
     at: !input offpeak_start
   - trigger: time
     at: !input offpeak_end
+  # Periodic re-check: identical verified writes are skipped until they are older than resync_hours.
+  - trigger: time_pattern
+    minutes: "/30"
   - trigger: homeassistant
     event: start
 
@@ -157,7 +213,11 @@ variables:
   restore_grid_charge: !input restore_grid_charge
   restore_cap_soc: !input restore_cap_soc
   dry_run: !input dry_run
+  state_entity: !input state_entity
+  resync_hours: !input resync_hours
+  hm_re: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
   # Fail closed: unavailable/unknown dispatch state counts as an error, never as "dispatching".
+  # No stored arm is kept through a sensor outage: an unreadable sensor restores straight away.
   dispatch_state: "{{ states(dispatch_entity) | lower }}"
   dispatch_error: "{{ dispatch_state in ['unavailable', 'unknown', 'none', ''] }}"
   plug_entity: "{{ (plug_entities if plug_entities is list else [plug_entities]) | select | first | default('') }}"
@@ -166,40 +226,65 @@ variables:
   plug_on_list: "{{ plug_on_states_raw.split(',') | map('trim') | map('lower') | select | list }}"
   plug_error: "{{ plug_gate and plug_state in ['unavailable', 'unknown', 'none', ''] }}"
   plugged: "{{ (not plug_gate) or (not plug_error and plug_state in plug_on_list) }}"
+  ps: "{{ prev_start | string | trim }}"
+  ns: "{{ next_start | string | trim }}"
+  restore_start: "{{ restore_start_raw[:5] }}"
+  wraps: "{{ slot | int in [1, 6] }}"
+  # Same checks as the n8n guard's Config node. Any error stops the run before anything is written.
+  config_errors: >-
+    {% set e = namespace(l=[]) %}
+    {% if ps != '' and ps is not match(hm_re) %}{% set e.l = e.l + ['previous slot start ' ~ ps ~ ' must be HH:MM'] %}{% endif %}
+    {% if ns != '' and ns is not match(hm_re) %}{% set e.l = e.l + ['next slot start ' ~ ns ~ ' must be HH:MM'] %}{% endif %}
+    {% if not dry_run and (ps == '' or ns == '') %}{% set e.l = e.l + ['set both neighbour slot starts before turning dry run off'] %}{% endif %}
+    {% if ps is match(hm_re) and ns is match(hm_re) %}
+      {% if ps == ns %}{% set e.l = e.l + ['previous and next slot starts are a duplicate (' ~ ps ~ ')'] %}
+      {% elif restore_start in [ps, ns] %}{% set e.l = e.l + ['restore start ' ~ restore_start ~ ' duplicates a neighbour slot start'] %}
+      {% elif not ((ps < restore_start < ns) if ps < ns else (wraps and (restore_start > ps or restore_start < ns))) %}{% set e.l = e.l + ['restore start ' ~ restore_start ~ ' is out of slot order (after ' ~ ps ~ ', before ' ~ ns ~ ')'] %}{% endif %}
+      {% if not wraps and ps > ns %}{% set e.l = e.l + ['neighbour starts ' ~ ps ~ ' / ' ~ ns ~ ' are out of order (only slot 1 or 6 may cross midnight)'] %}{% endif %}
+    {% endif %}
+    {{ e.l | join('; ') }}
+  config_ok: "{{ config_errors | trim == '' }}"
+  order_checked: "{{ ps is match(hm_re) and ns is match(hm_re) }}"
+  now_ts: "{{ as_timestamp(now()) | int }}"
   now_hm: "{{ now().strftime('%H:%M') }}"
   op_s: "{{ offpeak_start[:5] }}"
   op_e: "{{ offpeak_end[:5] }}"
   in_offpeak: >-
     {{ (now_hm >= op_s or now_hm < op_e) if op_s > op_e else (op_s <= now_hm < op_e) }}
-  # Arm start: the dispatch's current_start (stable for the whole dispatch), or now if
-  # missing or inside the off-peak window (the n8n guard trims dispatches to outside off-peak).
-  cur_start_hm: >-
+  # Arm start, as in the n8n guard, using full instants (timestamps) so midnight and clock changes are safe:
+  # the extra part of the dispatch starts at max(current_start, the last off-peak end), and an arm first seen
+  # after that start is clamped to now. The chosen start is stored per dispatch in the state helper and reused
+  # on later triggers (and after a restart), so it does not creep.
+  last_op_end_ts: >-
+    {% set e = as_timestamp(today_at(offpeak_end)) %}
+    {{ (e if e <= as_timestamp(now()) else as_timestamp(today_at(offpeak_end) - timedelta(days=1))) | int }}
+  disp_start_ts: >-
     {% set cs = state_attr(dispatch_entity, 'current_start') %}
-    {% if cs %}{{ (as_local(as_datetime(cs)) if cs is string else as_local(cs)).strftime('%H:%M') }}{% endif %}
+    {{ (as_timestamp(cs, 0) | int(0)) if cs else 0 }}
+  seg_start_ts: "{{ [disp_start_ts | int(0), last_op_end_ts | int] | max }}"
+  new_arm_hm: "{{ ([seg_start_ts | int, now_ts | int] | max) | timestamp_custom('%H:%M') }}"
+  # State helper: "dispatch key;arm start;last verified write;write time". Not JSON (HA would parse it to a dict).
+  st_raw: "{{ states(state_entity) | string }}"
+  st_k: "{{ (st_raw ~ ';;;;').split(';')[0] | trim }}"
+  st_s: "{{ (st_raw ~ ';;;;').split(';')[1] | trim }}"
+  st_w: "{{ (st_raw ~ ';;;;').split(';')[2] | trim }}"
+  st_t: "{{ (st_raw ~ ';;;;').split(';')[3] | trim }}"
   arm_start: >-
-    {% set c = cur_start_hm | string | trim %}
-    {% set c_off = (c >= op_s or c < op_e) if op_s > op_e else (op_s <= c < op_e) %}
-    {{ c if (c | length == 5 and not c_off) else now_hm }}
-  restore_start: "{{ restore_start_raw[:5] }}"
-  order_checked: "{{ prev_start | string | trim != '' and next_start | string | trim != '' }}"
+    {{ st_s if (st_k | string == seg_start_ts | string and st_s | string is match(hm_re)) else new_arm_hm }}
   # Slot order, wrapping past midnight only for slots 1 and 6 (as in the n8n guard).
   arm_in_order: >-
-    {% set p = prev_start | string | trim %}{% set n = next_start | string | trim %}{% set t = arm_start %}
+    {% set t = arm_start | string %}
     {% if not order_checked %}true
-    {% elif p < n %}{{ p < t < n }}
-    {% elif slot | int in [1, 6] %}{{ t > p or t < n }}
-    {% else %}false{% endif %}
-  restore_in_order: >-
-    {% set p = prev_start | string | trim %}{% set n = next_start | string | trim %}{% set t = restore_start %}
-    {% if not order_checked %}true
-    {% elif p < n %}{{ p < t < n }}
-    {% elif slot | int in [1, 6] %}{{ t > p or t < n }}
-    {% else %}false{% endif %}
+    {% elif ps < ns %}{{ ps < t < ns }}
+    {% else %}{{ wraps and (t > ps or t < ns) }}{% endif %}
   want_arm: "{{ not dispatch_error and dispatch_state == 'on' and not in_offpeak }}"
   guard_mode: >-
-    {% if want_arm and plugged and not plug_error %}{{ 'arm' if arm_in_order else 'hold' }}{% else %}restore{% endif %}
+    {% if not config_ok %}config_error
+    {% elif want_arm and plugged and not plug_error %}{{ 'arm' if arm_in_order else 'hold' }}
+    {% else %}restore{% endif %}
   reason: >-
-    {% if dispatch_error %}dispatch sensor {{ dispatch_state }}; restoring
+    {% if not config_ok %}invalid config: {{ config_errors | trim }}
+    {% elif dispatch_error %}dispatch sensor {{ dispatch_state }}; restoring
     {% elif want_arm and plug_error %}plug gate: plug state unreadable ({{ plug_state }}); restoring instead of arming
     {% elif want_arm and not plugged %}car not plugged in; restoring
     {% elif guard_mode == 'hold' %}arm start {{ arm_start }} is out of slot order; holding
@@ -209,14 +294,44 @@ variables:
   start: "{{ arm_start if guard_mode == 'arm' else restore_start }}"
   grid_charge: "{{ true if guard_mode == 'arm' else restore_grid_charge }}"
   cap: "{{ cap_soc if guard_mode == 'arm' else restore_cap_soc }}"
+  write_key: "{{ [guard_mode, slot | int, start, 1 if grid_charge else 0, cap | int] | join(',') }}"
+  # Arm/hold keep this dispatch's chosen start; restore forgets it.
+  keep_k: "{{ seg_start_ts if guard_mode in ['arm', 'hold'] else '' }}"
+  keep_s: "{{ arm_start if guard_mode in ['arm', 'hold'] else '' }}"
+  # A restart always rewrites (the inverter may have changed while HA was down), as does a marker older than resync_hours.
+  restarted: "{{ trigger is defined and trigger.platform == 'homeassistant' }}"
+  stale: >-
+    {{ (resync_hours | float(0)) <= 0 or not (st_t | string is match('^[0-9]+$'))
+       or (now_ts | int - st_t | int) >= (resync_hours | float(0)) * 3600 }}
+  redundant: "{{ not restarted and not stale and st_w | string == write_key }}"
 
 conditions: []
 
 actions:
   - if:
       - condition: template
+        value_template: "{{ guard_mode == 'config_error' }}"
+    then:
+      - action: system_log.write
+        data:
+          level: error
+          logger: blueprints.io_ev_guard
+          message: "IO EV Guard: {{ reason }}. Nothing written."
+      - stop: "invalid config"
+        error: true
+  - if:
+      - condition: template
         value_template: "{{ guard_mode == 'hold' }}"
     then:
+      - if:
+          - condition: template
+            value_template: "{{ [keep_k, keep_s, st_w, st_t] | join(';') != st_raw }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: "{{ state_entity }}"
+            data:
+              value: "{{ [keep_k, keep_s, st_w, st_t] | join(';') }}"
       - action: system_log.write
         data:
           level: warning
@@ -225,19 +340,18 @@ actions:
       - stop: "hold"
   - if:
       - condition: template
-        value_template: "{{ guard_mode == 'restore' and not restore_in_order }}"
-    then:
-      - action: system_log.write
-        data:
-          level: error
-          logger: blueprints.io_ev_guard
-          message: "IO EV Guard: restore start {{ restore_start }} is out of slot order. Nothing written."
-      - stop: "restore start out of slot order"
-        error: true
-  - if:
-      - condition: template
         value_template: "{{ dry_run }}"
     then:
+      # Dry run never counts as a verified write, so the marker is cleared and the first live run writes.
+      - if:
+          - condition: template
+            value_template: "{{ [keep_k, keep_s, '', ''] | join(';') != st_raw }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: "{{ state_entity }}"
+            data:
+              value: "{{ [keep_k, keep_s, '', ''] | join(';') }}"
       - action: persistent_notification.create
         data:
           notification_id: io_ev_guard
@@ -251,10 +365,58 @@ actions:
           logger: blueprints.io_ev_guard
           message: "IO EV Guard dry run: would {{ guard_mode }} slot {{ slot }} start={{ start }} grid_charge={{ grid_charge }} cap={{ cap }} ({{ reason }})"
     else:
+      - if:
+          - condition: template
+            value_template: "{{ redundant }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ [keep_k, keep_s, st_w, st_t] | join(';') != st_raw }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: "{{ state_entity }}"
+                data:
+                  value: "{{ [keep_k, keep_s, st_w, st_t] | join(';') }}"
+          - action: system_log.write
+            data:
+              level: debug
+              logger: blueprints.io_ev_guard
+              message: "IO EV Guard: {{ guard_mode }} slot {{ slot }} already written and verified; no change"
+          - stop: "no change"
+      # Clear the marker first: if the write action fails, the run stops here with the marker empty,
+      # so the next trigger writes again.
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ state_entity }}"
+        data:
+          value: "{{ [keep_k, keep_s, '', ''] | join(';') }}"
       - action: system_log.write
         data:
           level: info
           logger: blueprints.io_ev_guard
           message: "IO EV Guard: {{ guard_mode }} slot {{ slot }} start={{ start }} grid_charge={{ grid_charge }} cap={{ cap }} ({{ reason }})"
+      # The write action must set write_verified to true after it has read the slot back and checked it.
+      # An empty action, or one that doesn't confirm, stops with an error and leaves the marker cleared.
+      - variables:
+          write_verified: false
       - choose: []
         default: !input write_action
+      - if:
+          - condition: template
+            value_template: "{{ write_verified is not true }}"
+        then:
+          - action: system_log.write
+            data:
+              level: error
+              logger: blueprints.io_ev_guard
+              message: >-
+                IO EV Guard: the write action did not set write_verified to true (empty action, or the write
+                was not read back and verified). Not recorded as written; it will be retried.
+          - stop: "write not verified"
+            error: true
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ state_entity }}"
+        data:
+          value: "{{ [keep_k, keep_s, write_key, now_ts] | join(';') }}"

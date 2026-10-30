@@ -9,3 +9,5 @@ secrets/
 n8n-data/
 .DS_Store
 node_modules/
+__pycache__/
+.venv-ha/

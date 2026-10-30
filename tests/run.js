@@ -540,6 +540,38 @@ test('blueprint: fails closed on unavailable/unknown dispatch or plug state and 
   assert.match(String(v.plug_state), /trim \| lower/);
   assert.match(String(v.plugged), /not plug_gate/);
 });
+test('blueprint: write_action and state_entity are required (no default) and min HA version is 2025.4.0', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const inp = bp.blueprint.input;
+  assert.ok(!('default' in inp.write_action), 'write_action must have no default');
+  assert.ok(!('default' in inp.state_entity), 'state_entity must have no default');
+  assert.ok(inp.state_entity.selector.entity, 'state_entity uses an entity selector');
+  assert.strictEqual(bp.blueprint.homeassistant.min_version, '2025.4.0');
+});
+test('blueprint: no state trigger on the plug input (blank plug sensor is safe); plug triggers are guarded templates', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const trig = bp.triggers || bp.trigger;
+  const refs = (o) => inputRefs(o);
+  for (const t of trig) {
+    if ((t.trigger || t.platform) === 'state') assert.ok(!refs(t).includes('plug_entities'), 'plug_entities used in a state trigger');
+  }
+  const tmpl = trig.filter((t) => (t.trigger || t.platform) === 'template');
+  assert.deepStrictEqual(tmpl.map((t) => t.id).sort(), ['plug_off', 'plug_on', 'plug_unreadable']);
+  for (const t of tmpl) assert.match(String(t.value_template), /plug_tv != ''/);
+});
+test('blueprint: neighbour times are validated (HH:MM regex, duplicates, order) and a config error stops the run', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const src = JSON.stringify(bp.variables);
+  assert.match(src, /\(\[01\]\[0-9\]\|2\[0-3\]\):\[0-5\]\[0-9\]/);
+  assert.match(JSON.stringify(bp.actions || bp.action), /config_error/);
+});
+test('blueprint: arm start is clamped to now using full timestamps', async () => {
+  const bp = loadBlueprint(fs.readFileSync(blueprintPath, 'utf8'));
+  const src = JSON.stringify(bp.variables);
+  assert.match(src, /now_ts/);
+  assert.match(src, /\| max/);
+  assert.match(src, /timestamp_custom/);
+});
 test('blueprint loader rejects an undefined !input reference', async () => {
   const bad = 'blueprint:\n  name: x\n  description: x\n  domain: automation\n  input:\n    a:\n      name: A\n      selector:\n        text: {}\nvariables:\n  a: !input a\n  b: !input nope\n';
   const bp = loadBlueprint(bad);

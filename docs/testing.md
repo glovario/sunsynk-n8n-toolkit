@@ -30,7 +30,18 @@ CI runs them on every push and pull request ([`.github/workflows/ci.yml`](../.gi
 - slot order across midnight: slot 1 (prev = slot 6), slot 6 (next = 00:00) and a middle slot
 - Config: 16:00 restore default, duplicate and out-of-order slot starts rejected, Sell cross-checks only when `SELL_ENABLED=true`
 
+- the blueprint's structure: every `!input` defined and used, dry run on by default, no default write action, a required state helper, `min_version` 2025.4.0, no state trigger on the plug input, neighbour validation and the clamped arm start
+
 Add a test for any change to a Code node.
+
+## Home Assistant blueprint tests
+
+`tests/ha/` runs the blueprint inside a real Home Assistant core (no network, no live instance), using `pytest-homeassistant-custom-component`. Versions are pinned in `tests/ha/requirements.txt` (Home Assistant 2026.10.4, Python 3.14). See [the blueprint guide](blueprint.md#testing-the-blueprint) for the commands. CI runs them in the `ha-blueprint` job.
+
+- `pytest tests/ha`: 33 behaviour tests, covering a blank plug sensor, plug on/off/unavailable, attribute-only updates, a missing, empty or unconfirmed write action, invalid neighbour times, slot 6 wrap, restart mid-dispatch (start clamped to now, stored start reused), dispatches overlapping off-peak, UK clock changes, midnight, failed writes retried, the resync skip, dry run never recording a write, sensor outage and hold.
+- `python tests/ha/check_config.py`: Home Assistant's own `check_config` on a throwaway config with the blueprint instantiated twice (blank and set plug sensor). Fails on any logged `ERROR`, because `check_config` itself exits 0 when a blueprint fails to instantiate.
+
+Both also pass on Home Assistant 2025.4.0 (the declared minimum), run by hand; CI tests only the pinned version.
 
 ## Live test checklist
 

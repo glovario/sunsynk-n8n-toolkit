@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Tests that parse `config/example.env` the way `docker --env-file` does and check every value against `config/schema.json`, in both directions. Merged 2026-10-30 ([#6](https://github.com/glovario/sunsynk-n8n-toolkit/pull/6)).
 
 - Home Assistant automation blueprint for the IO EV Guard (`blueprints/automation/io-ev-guard.yaml`) and `docs/blueprint.md`. It is dry run by default, fails closed and is not live-tested. Offline structure tests use js-yaml, a new devDependency, and CI now runs `npm ci`. (pending, PR #8)
+  - After review: the plug trigger is a guarded template trigger, so a blank plug sensor is safe; the write action is required and must confirm with `write_verified: true`; neighbour times are validated like the n8n guard (config error stops the run); the arm start is clamped to now with full date-times and kept stable for the dispatch; identical verified writes are skipped until a restart or `resync_hours`. A required `input_text` helper stores this state. Declares `min_version: 2025.4.0`.
+  - Home Assistant tests (`tests/ha/`, pinned to Home Assistant 2026.10.4): behaviour tests in a real Home Assistant core, and a `check_config` run. A new CI job runs both.
 
 ### Changed
 
