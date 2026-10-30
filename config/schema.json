@@ -97,7 +97,8 @@
     "GUARD_RESTORE_START": {
       "type": "string",
       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
-      "default": "18:00"
+      "default": "16:00",
+      "description": "Start time put back on GUARD_SLOT when not armed. Must be strictly between GUARD_SLOT_PREV_START and GUARD_SLOT_NEXT_START and must not equal SELL_START (Config rejects duplicates/out-of-order)."
     },
     "GUARD_RESTORE_CAP_SOC": {
       "type": "integer",
@@ -138,12 +139,12 @@
     "GUARD_SLOT_PREV_START": {
       "type": "string",
       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
-      "description": "Start time of slot GUARD_SLOT-1 on your inverter. Required when GUARD_DRY_RUN=false."
+      "description": "Start time of slot GUARD_SLOT-1 (slot 6, the day before, if GUARD_SLOT=1). Required when GUARD_DRY_RUN=false. Must differ from GUARD_SLOT_NEXT_START; must equal SELL_START if SELL_SLOT is the previous slot."
     },
     "GUARD_SLOT_NEXT_START": {
       "type": "string",
       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
-      "description": "Start time of slot GUARD_SLOT+1 (00:00 if GUARD_SLOT=6). Required when GUARD_DRY_RUN=false."
+      "description": "Start time of slot GUARD_SLOT+1 (slot 1, usually 00:00, if GUARD_SLOT=6). Required when GUARD_DRY_RUN=false. Must equal SELL_START if SELL_SLOT is the next slot. Only slots 1 and 6 may wrap past midnight."
     },
     "OCTOPUS_RETRIES": {
       "type": "integer",

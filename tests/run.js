@@ -51,7 +51,7 @@ test('arm then unplugged writes the restore settings, not the arm ones', async (
   });
   assert.strictEqual(out.mode, 'restore');
   const merged = Object.assign({}, ...sent.map((b) => b.params));
-  assert.deepStrictEqual(merged, { sellTime5: '18:00', time5On: '0', time5on: 'false', cap5: 50 });
+  assert.deepStrictEqual(merged, { sellTime5: '16:00', time5On: '0', time5on: 'false', cap5: 50 });
 });
 
 // ---- Finding 2: dry-run response must not be cached
@@ -94,9 +94,10 @@ test('network error is retried, then succeeds', async () => {
   const out = await octo([TOK, DEV, new Error('ECONNRESET'), { data: { flexPlannedDispatches: [] } }]);
   assert.deepStrictEqual(out.planned, []); assert.strictEqual(out.query_ok, true);
 });
-test('Plan refuses to run without a successful query', async () => {
+test('Plan never arms without a successful query (restores, flags octopus_error)', async () => {
   const cfg = await cfgFor({});
-  await assert.rejects(run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': { planned: [] } } }), /did not succeed/);
+  const p = await run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': { planned: [{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }] } }, now: '2026-11-02T14:05:00Z' });
+  assert.strictEqual(p.mode, 'restore'); assert.match(p.octopus_error, /did not succeed/);
 });
 
 // ---- Finding 4: tomorrow / far-future dispatch
@@ -176,7 +177,7 @@ for (const [label, http] of [
       http: async (r) => { if (r.url === 'http://ha/plug') return http(); sent.push(r.body); return { ok: true, dry_run: true }; } });
     assert.strictEqual(out.mode, 'restore'); assert.strictEqual(out.plugged, null);
     assert.ok(out.plug_error); assert.match(out.reason, /restoring instead of arming/);
-    assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '18:00', time5On: '0', time5on: 'false', cap5: 50 });
+    assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '16:00', time5On: '0', time5on: 'false', cap5: 50 });
   });
 }
 test('already-armed slot is restored on plug error and the stored start is cleared', async () => {
@@ -195,7 +196,7 @@ test('already-armed slot is restored on plug error and the stored start is clear
   out = await poll('14:10');
   assert.strictEqual(out.mode, 'restore'); assert.strictEqual(out.action, 'written'); assert.ok(out.plug_error);
   assert.strictEqual(state.arm, undefined);
-  assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '18:00', time5On: '0', time5on: 'false', cap5: 50 });
+  assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '16:00', time5On: '0', time5on: 'false', cap5: 50 });
 });
 test('plug gate unreadable still allows a restore', async () => {
   const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
@@ -211,6 +212,106 @@ test('plug gate on: arms', async () => {
   const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
     http: async (r) => (r.url === 'http://ha/plug' ? { state: 'on' } : { ok: true, dry_run: true }) });
   assert.strictEqual(out.mode, 'arm'); assert.strictEqual(out.plugged, true);
+});
+
+// ---- Guard fixes 1: Octopus failure must not leave an armed slot armed past its dispatch
+const OCT_FAIL = { error: 'Octopus flexPlannedDispatches failed after 3 tries: ETIMEDOUT. Nothing was changed.' };
+const planWith = (cfg, oct, state, now) => run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': oct }, state, now });
+test('workflow routes an Octopus Dispatches error into Plan instead of stopping', async () => {
+  const node = guard.nodes.find((x) => x.name === 'Octopus Dispatches');
+  assert.strictEqual(node.onError, 'continueRegularOutput');
+  assert.strictEqual(guard.connections['Octopus Dispatches'].main[0][0].node, 'Plan');
+});
+test('arm stores the dispatch start and end', async () => {
+  const cfg = await cfgFor({}); const state = {};
+  const p = await planWith(cfg, { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, state, '2026-11-02T14:00:00Z');
+  assert.strictEqual(p.mode, 'arm');
+  assert.strictEqual(state.arm.end, '2026-11-02T15:00:00.000Z'); assert.strictEqual(state.arm.key, '2026-11-02T13:55:00.000Z');
+});
+test('Octopus fails mid-dispatch: stays armed with the stored start until the stored end', async () => {
+  const cfg = await cfgFor({}); const state = {};
+  await planWith(cfg, { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, state, '2026-11-02T14:00:00Z');
+  const p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:30:00Z');
+  assert.strictEqual(p.mode, 'arm'); assert.strictEqual(p.params.sellTime5, '14:00');
+  assert.match(p.octopus_error, /ETIMEDOUT/); assert.ok(state.arm);
+});
+test('Octopus fails after the stored end: restores and clears the stored arm', async () => {
+  const cfg = await cfgFor({}); const state = {};
+  await planWith(cfg, { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, state, '2026-11-02T14:00:00Z');
+  const p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T15:00:00Z');
+  assert.strictEqual(p.mode, 'restore'); assert.deepStrictEqual(p.params, p.restore_params);
+  assert.match(p.octopus_error, /ETIMEDOUT/); assert.strictEqual(state.arm, undefined);
+});
+test('Octopus fails with an arm stored without an end (older state): restores', async () => {
+  const cfg = await cfgFor({}); const state = { arm: { key: '2026-11-02T13:55:00.000Z', start: '14:00' } };
+  const p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:10:00Z');
+  assert.strictEqual(p.mode, 'restore'); assert.ok(p.octopus_error); assert.strictEqual(state.arm, undefined);
+});
+test('Octopus fails with nothing armed: restores with an octopus_error diagnostic', async () => {
+  const cfg = await cfgFor({});
+  const p = await planWith(cfg, OCT_FAIL, {}, '2026-11-02T14:10:00Z');
+  assert.strictEqual(p.mode, 'restore'); assert.ok(p.octopus_error);
+});
+test('end to end: armed, then Octopus down past the dispatch end -> restore is written', async () => {
+  const env = { GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' };
+  const cfg = await cfgFor(env); const state = {}; const sent = [];
+  const poll = async (oct, t) => run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: await planWith(cfg, oct, state, `2026-11-02T${t}:00Z`) }, env: baseEnv, state,
+    http: async (r) => { sent.push(r.body); return { ok: true, dry_run: false }; } });
+  let out = await poll({ query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, '14:00');
+  assert.strictEqual(out.action, 'written'); sent.length = 0;
+  out = await poll(OCT_FAIL, '14:50'); assert.strictEqual(out.action, 'no_change');
+  out = await poll(OCT_FAIL, '15:10');
+  assert.strictEqual(out.mode, 'restore'); assert.strictEqual(out.action, 'written'); assert.ok(out.octopus_error);
+  assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: cfg.restore_start, time5On: '0', time5on: 'false', cap5: 50 });
+});
+
+// ---- Guard fixes 2: slot order is wrap-aware (slot 1's previous slot is slot 6 from the day before)
+test('GUARD_SLOT=1 arms just after midnight (prev = slot 6 at 23:30)', async () => {
+  const env = { GUARD_SLOT: '1', GUARD_PROTECTED_SLOTS: '2,3,4,5,6', GUARD_SLOT_PREV_START: '23:30', GUARD_SLOT_NEXT_START: '05:30', GUARD_RESTORE_START: '00:00',
+    GUARD_OFFPEAK_START: '02:00', GUARD_OFFPEAK_END: '04:00' };
+  const p = await plan([{ start: '2026-11-02T00:10:00Z', end: '2026-11-02T01:00:00Z' }], '2026-11-02T00:05:00Z', env);
+  assert.strictEqual(p.mode, 'arm'); assert.strictEqual(p.params.sellTime1, '00:10');
+  const late = await plan([{ start: '2026-11-02T23:40:00Z', end: '2026-11-03T00:20:00Z' }], '2026-11-02T23:35:00Z', env);
+  assert.strictEqual(late.mode, 'arm'); assert.strictEqual(late.params.sellTime1, '23:40');
+  const bad = await plan([{ start: '2026-11-02T10:00:00Z', end: '2026-11-02T11:00:00Z' }], '2026-11-02T09:55:00Z', env);
+  assert.strictEqual(bad.mode, 'hold');
+});
+test('GUARD_SLOT=6 (next = slot 1 at 00:00) arms in the evening, holds before slot 5', async () => {
+  const env = { GUARD_SLOT: '6', GUARD_PROTECTED_SLOTS: '1,2,3,4,5', GUARD_SLOT_PREV_START: '16:00', GUARD_SLOT_NEXT_START: '00:00', GUARD_RESTORE_START: '19:00' };
+  const p = await plan([{ start: '2026-11-02T20:00:00Z', end: '2026-11-02T21:00:00Z' }], '2026-11-02T19:55:00Z', env);
+  assert.strictEqual(p.mode, 'arm'); assert.strictEqual(p.params.sellTime6, '20:00');
+  const bad = await plan([{ start: '2026-11-02T15:00:00Z', end: '2026-11-02T15:40:00Z' }], '2026-11-02T14:55:00Z', env);
+  assert.strictEqual(bad.mode, 'hold');
+});
+test('middle slot (5) keeps the plain between-neighbours rule', async () => {
+  const env = { GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00', GUARD_RESTORE_START: '16:00' };
+  assert.strictEqual((await plan([{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }], '2026-11-02T14:00:00Z', env)).mode, 'arm');
+  assert.strictEqual((await plan([{ start: '2026-11-02T18:10:00Z', end: '2026-11-02T19:00:00Z' }], '2026-11-02T18:05:00Z', env)).mode, 'hold');
+});
+
+// ---- Guard fixes 3: default restore start must not clash with SELL_START; slot starts validated
+test('default GUARD_RESTORE_START is not the SELL_START default (18:00)', async () => {
+  const cfg = await cfgFor({});
+  assert.notStrictEqual(cfg.restore_start, '18:00');
+  await cfgFor({ SELL_ENABLED: 'true' }); // defaults alone must pass with Sell on
+});
+test('GUARD_RESTORE_START equal to SELL_START is rejected', async () => {
+  await assert.rejects(cfgFor({ GUARD_RESTORE_START: '18:00', SELL_ENABLED: 'true' }), /GUARD_RESTORE_START.*SELL_START/);
+  await assert.rejects(cfgFor({ GUARD_RESTORE_START: '17:00', SELL_START: '17:00' }), /GUARD_RESTORE_START.*SELL_START/);
+});
+test('duplicate neighbour starts are rejected', async () => {
+  await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '18:00', GUARD_SLOT_NEXT_START: '18:00' }), /duplicate/);
+  await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00', GUARD_RESTORE_START: '18:00' }), /duplicate/);
+  await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00', GUARD_RESTORE_START: '05:30' }), /duplicate/);
+});
+test('out-of-order slot starts are rejected in Config', async () => {
+  await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00', GUARD_RESTORE_START: '19:00' }), /out of slot order/);
+  await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '18:00', GUARD_SLOT_NEXT_START: '05:30', GUARD_RESTORE_START: '12:00' }), /out of slot order/); // slot 5 cannot wrap
+});
+test('Sell as the next slot: GUARD_SLOT_NEXT_START must be SELL_START', async () => {
+  await assert.rejects(cfgFor({ SELL_ENABLED: 'true', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' }), /GUARD_SLOT_NEXT_START.*SELL_START/);
+  const ok = await cfgFor({ SELL_ENABLED: 'true', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00' });
+  assert.strictEqual(ok.slot_next_start, '18:00');
 });
 
 (async () => {
