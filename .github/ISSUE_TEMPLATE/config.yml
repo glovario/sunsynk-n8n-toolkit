@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/glovario/sunsynk-n8n-toolkit/blob/main/docs/troubleshooting.md
+    about: Common errors and fixes. Please check here before opening an issue.
