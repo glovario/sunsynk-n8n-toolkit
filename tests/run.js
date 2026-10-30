@@ -167,17 +167,36 @@ for (const [label, http] of [
   ['unavailable', async () => ({ state: 'unavailable' })],
   ['empty body', async () => ({})],
 ]) {
-  test(`plug gate ${label}: does not arm and writes nothing`, async () => {
+  test(`plug gate ${label}: restores instead of arming`, async () => {
     const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
     const p = await plan([{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }], '2026-11-02T14:00:00Z');
     assert.strictEqual(p.mode, 'arm');
     const sent = [];
     const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
-      http: async (r) => { if (r.url === 'http://ha/plug') return http(); sent.push(r); return { ok: true }; } });
-    assert.strictEqual(out.action, 'skipped'); assert.strictEqual(out.plugged, null);
-    assert.ok(out.plug_error); assert.match(out.reason, /not arming/); assert.strictEqual(sent.length, 0);
+      http: async (r) => { if (r.url === 'http://ha/plug') return http(); sent.push(r.body); return { ok: true, dry_run: true }; } });
+    assert.strictEqual(out.mode, 'restore'); assert.strictEqual(out.plugged, null);
+    assert.ok(out.plug_error); assert.match(out.reason, /restoring instead of arming/);
+    assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '18:00', time5On: '0', time5on: 'false', cap5: 50 });
   });
 }
+test('already-armed slot is restored on plug error and the stored start is cleared', async () => {
+  const env = { GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30', GUARD_PLUG_STATE_URL: 'http://ha/plug' };
+  const cfg = await cfgFor(env);
+  const d = [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }];
+  const state = {}; let plug = async () => ({ state: 'on' }); const sent = [];
+  const poll = async (t) => {
+    const p = await run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': { query_ok: true, device_found: true, planned: d } }, state, now: `2026-11-02T${t}:00Z` });
+    return run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state,
+      http: async (r) => { if (r.url === 'http://ha/plug') return plug(); sent.push(r.body); return { ok: true, dry_run: false }; } });
+  };
+  let out = await poll('14:00');
+  assert.strictEqual(out.mode, 'arm'); assert.strictEqual(out.action, 'written'); assert.strictEqual(state.arm.start, '14:00');
+  sent.length = 0; plug = async () => { throw new Error('ETIMEDOUT'); };
+  out = await poll('14:10');
+  assert.strictEqual(out.mode, 'restore'); assert.strictEqual(out.action, 'written'); assert.ok(out.plug_error);
+  assert.strictEqual(state.arm, undefined);
+  assert.deepStrictEqual(Object.assign({}, ...sent.map((b) => b.params)), { sellTime5: '18:00', time5On: '0', time5on: 'false', cap5: 50 });
+});
 test('plug gate unreadable still allows a restore', async () => {
   const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug' });
   const p = await plan([], '2026-11-02T14:00:00Z');
