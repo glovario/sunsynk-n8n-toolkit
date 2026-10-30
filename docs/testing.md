@@ -11,10 +11,10 @@ node tests/run.js
 - **Network:** nothing goes to the network or to an inverter.
 - **Exit code:** 0 when every test passes, 1 otherwise.
 
-Currently **22/22** pass. They cover:
+Currently **45/45** pass. They cover:
 - arm then unplugged, which writes the restore settings
 - dry-run replies not cached, then a real write, then `no_change`, then a failed write
-- Octopus: GraphQL error on devices, missing `flexPlannedDispatches` data, a retried network error, and Plan refusing without a successful query
+- Octopus: GraphQL error on devices, missing `flexPlannedDispatches` data, a retried network error, and Plan never arming without a successful query
 - a dispatch tomorrow not armed today, a later dispatch waiting until the lead-in, and an out-of-order arm start held
 - leaving dry run without the slot neighbours is a config error
 - UK clock changes: spring forward 2027 and fall back 2026, both window edges
@@ -23,6 +23,11 @@ Currently **22/22** pass. They cover:
 - an already-armed slot restored on plug error, with the stored start cleared
 - restore when the plug can't be read, and arm when plugged in
 - a blocked `crypto` module gives a clear error
+- Octopus outage: error routed to Plan (continue on error); arm stores start and end; a verified arm stays until the stored end, then restores; unverified arms (dry run, failed read-back, plug refused) and arms with no stored end restore; end-to-end restore write; a consecutive-failure count that resets on success
+- whole executions with n8n's persistence rule (static data saved only when the execution succeeds; a failed one discards its changes): outage runs succeed and keep their state; repeated outage polls after a verified restore don't rewrite and the failure count climbs; a dispatch end extended with an arm `no_change` then an outage stays armed until the new end; an alert sub-workflow that fails doesn't fail the run or lose state
+- alert nodes: `Octopus Alert` never throws and sends only when Octopus failed and `GUARD_ALERT_WORKFLOW_ID` is set; `Send Alert` doesn't wait and continues on error
+- slot order across midnight: slot 1 (prev = slot 6), slot 6 (next = 00:00) and a middle slot
+- Config: 16:00 restore default, duplicate and out-of-order slot starts rejected, Sell cross-checks only when `SELL_ENABLED=true`
 
 Add a test for any change to a Code node.
 
@@ -40,7 +45,7 @@ There was no review checklist on hand, so this one is **derived from the code**.
 - [ ] A real extra dispatch (or one outside off-peak) is armed 20 minutes before at the latest, with `sellTimeN` equal to the dispatch start, and stays the same on every poll until it ends.
 - [ ] After the dispatch, the next run gives `mode: restore`.
 - [ ] With the plug gate: an unplugged car gives restore, and a wrong `HA_TOKEN` (401) gives restore with `plug_error`.
-- [ ] An Octopus failure (e.g. a wrong API key) stops the run with "Nothing was changed."
+- [ ] An Octopus failure (e.g. a wrong API key) gives `mode: restore` (nothing was verified-armed in dry run), the execution **succeeds**, and `octopus_failures` goes up by one per run. With `GUARD_ALERT_WORKFLOW_ID` set, your alert workflow gets `Octopus unavailable (N consecutive runs): …`; break the alert workflow on purpose and check the guard execution still succeeds.
 
 ### Live
 Before going live, read the [manual recovery procedure](safety.md#emergency-manual-recovery): turning writes off doesn't undo an armed slot.

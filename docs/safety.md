@@ -50,11 +50,10 @@ A real write needs every one of these.
 | Situation | What happens |
 |---|---|
 | Bad or missing guard settings | Config stops with every problem listed. Nothing sent. |
-| Octopus token, device or dispatch query fails (network, GraphQL `errors`, no `data`, missing field) after retries | Run stops: "… Nothing was changed." Never treated as "no dispatches", so no restore. "Nothing was changed" is true only for *this run*: see the next row. |
-| **Octopus fails after an earlier run armed the slot** (known limitation of the current code) | `Octopus Dispatches` throws, so `Plan` and `Gate And Send` never run and **no restore is sent**. The slot stays armed (grid charge on, `capN = GUARD_CAP_SOC`) past the end of the dispatch, and the inverter can import at peak rates until Octopus answers again. Monitor failed executions and, if the API stays down, check and restore the slot by hand ([manual recovery](#emergency-manual-recovery)). |
+| **Octopus fails** (token, device or dispatch query: network, GraphQL `errors`, no `data`, missing field, after retries) | `Octopus Dispatches` continues on error and passes `{ error }` to `Plan`. It is never treated as "no dispatches". `Plan` keeps the slot armed only if `Gate And Send` verified an arm for that same dispatch (`committed_arm`, saved after a successful read-back) and the stored dispatch end hasn't passed. Otherwise it plans a **restore**, which `Gate And Send` writes. `Octopus Alert` then fails the execution, so n8n's error workflow fires (see [Alerting on Octopus failures](#alerting-on-octopus-failures)). |
 | No EV or charger on the account | Run stops. Nothing changed. |
 | A dispatch with a bad start/end | Run stops. Nothing changed. |
-| Plan runs without a successful query | Plan refuses: "Octopus query did not succeed; refusing to plan." |
+| Plan runs without a successful query | Never arms a new dispatch; same fallback as an Octopus failure, with `octopus_error` set. |
 | Arm start out of slot order | `hold`: nothing written, `action: skipped`. |
 | `GUARD_RESTORE_START` out of slot order | Run stops. Nothing changed. |
 | Dispatch later today or tomorrow (beyond `GUARD_LEAD_IN_MIN`) | Not armed yet, because slots have no date. |
@@ -64,6 +63,25 @@ A real write needs every one of these.
 | Read-back mismatch | `ok: false`, guard `action: write_failed`, retried next run. |
 | `crypto` blocked or Sunsynk login fails | Control stops before any write. |
 | Invalid serial, command or field | Control stops before login. |
+
+## Alerting on Octopus failures
+
+`Octopus Dispatches` is set to continue on error so that the fallback restore can run. The guard execution itself must **succeed** during an outage: n8n saves workflow static data (`last`, `arm`, `committed_arm`, `octopus_failures`) only "when the workflow execution succeeds" ([n8n docs](https://docs.n8n.io/build/code-in-n8n/cookbook/built-in-methods-and-variables-examples/getworkflowstaticdata/)). If the run failed, the next run would forget a restore it had just verified and rewrite the inverter every 10 minutes. So the guard doesn't use n8n's error workflow for outages. Instead, two nodes run after `Gate And Send` (so any fallback restore has already been sent):
+
+1. `Octopus Alert` (Code, never throws, set to continue on error). When `octopus_error` is set **and** `GUARD_ALERT_WORKFLOW_ID` is set, it outputs one item:
+   `{ alert_workflow_id, source: "io-ev-guard", kind: "octopus_unavailable", message, octopus_failures, octopus_error, mode, action, reason }`
+   where `message` is `Octopus unavailable (N consecutive runs): <error> Fallback: mode=<arm|restore>, action=<written|no_change|…>.` Otherwise it outputs nothing and the branch stops.
+2. `Send Alert` (Execute Sub-workflow) calls that workflow by ID with **Wait for Sub-Workflow Completion off** and **On Error: Continue**. With waiting off, n8n starts the sub-workflow and returns the input items straight away, so the sub-workflow's own result can't fail the guard. If the call itself fails (wrong ID, workflow missing or not callable), Continue passes an `{ error }` item on instead of stopping the workflow ([Execute Sub-workflow](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executeworkflow/), [node settings: On Error](https://docs.n8n.io/build/understand-workflows/workflow-components/work-with-nodes/)).
+
+Setup:
+
+- Create an alert workflow that starts with **When Executed by Another Workflow** (input data mode **Accept all data**). In it, deliver `message` however you like: email, Home Assistant notify, ntfy, a webhook. Use `octopus_failures` to alert only after, say, 3 consecutive failures, since the guard polls every 10 minutes and a sustained outage sends an item every run.
+- In that workflow's settings, allow the guard to call it (**This workflow can be called by**), and publish it.
+- Set `GUARD_ALERT_WORKFLOW_ID` to its ID (the part after `/workflow/` in its URL).
+- Blank (the default) means no alert. The failure is still visible in each execution's output as `octopus_error` and `octopus_failures`.
+- N counts consecutive failed Octopus queries and resets on the next successful query.
+- A guard error workflow (workflow settings → Error workflow) is still worth setting for real failures, such as a bad config. Those executions stop before anything is written.
+- If the alert says `mode=restore` and `action=write_failed` (or Control is off), the slot wasn't restored: follow the manual recovery below.
 
 ## Emergency manual recovery
 
@@ -75,9 +93,9 @@ Disabling the automation is not the same as restoring the inverter. Anything alr
 
 ## What it doesn't protect against
 
-- **Known limitation of the current code:** an Octopus outage after an earlier arm leaves the slot armed past the dispatch, because no restore runs while `Octopus Dispatches` is failing. See the fail-closed table and [manual recovery](#emergency-manual-recovery).
+- During an Octopus outage the guard can't see new, changed or cancelled dispatches. A verified arm stays until its *stored* end even if Octopus cancelled the dispatch meanwhile; nothing new is armed until Octopus answers.
+- The fallback restore itself needs Sunsynk Control and writes to be working. If they aren't, the slot stays as it is: use the [manual recovery](#emergency-manual-recovery).
 - Disabling writes doesn't undo an armed slot. See [manual recovery](#emergency-manual-recovery).
-- `GUARD_SLOT=1` isn't supported (see [configuration.md](configuration.md#known-issues)).
 
 - Evening Sell doesn't check slot order or protected slots, and it doesn't fail on `ok: false`.
 - If you change the inverter's timer by hand, `GUARD_SLOT_PREV_START` / `GUARD_SLOT_NEXT_START` can go out of date.

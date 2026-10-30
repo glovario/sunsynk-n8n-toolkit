@@ -21,12 +21,12 @@
     - `no data in response`
     - `expected field missing`
     - a network error
-  - Nothing was changed *by this run*. The next scheduled run tries again.
-  - **Known limitation of the current code:** if an earlier run armed the slot, it stays armed while these errors continue, even after the dispatch ends, because no restore runs. Set up monitoring of failed executions for the guard workflow (**TBD:** method depends on your n8n setup, e.g. an error workflow). If the errors persist past the dispatch, disable writes, then restore the slot by hand and verify: see [safety.md](safety.md#emergency-manual-recovery).
+  - The guard doesn't stop at the Octopus node. `Plan` keeps a verified arm until its stored dispatch end, otherwise restores; `Gate And Send` writes that; the execution still succeeds, with `octopus_error` and `octopus_failures` in the output. The next scheduled run tries Octopus again.
+  - Set `GUARD_ALERT_WORKFLOW_ID` to be notified: see [safety.md](safety.md#alerting-on-octopus-failures). If the alert shows `action=write_failed`, the restore didn't land: disable writes, restore the slot by hand and verify ([manual recovery](safety.md#emergency-manual-recovery)).
 - **"No EV or charger found on the Octopus account"**
   - Set `OCTOPUS_EV_DEVICE_ID`, or check that the car or charger is linked to Intelligent Octopus on `OCTOPUS_ACCOUNT`.
-- **"Octopus query did not succeed; refusing to plan"**
-  - Plan was run without the Octopus step. This normally only happens if the workflow was edited.
+- **`octopus_error: "Octopus query did not succeed"`**
+  - Plan got no usable Octopus output (normally only if the workflow was edited). It is handled like an Octopus failure.
 
 ## `plug_error` in the guard output
 The guard couldn't read the plug sensor, so it restored the slot instead of arming. The messages:
@@ -41,7 +41,7 @@ If the state is readable but the car is shown as unplugged when it's plugged in,
   - Check that `GUARD_SLOT_PREV_START` / `GUARD_SLOT_NEXT_START` match the inverter. If dispatches regularly fall outside, consider a different `GUARD_SLOT` or moving the neighbouring slots.
   - The guard keeps holding for that dispatch, because the start is fixed per dispatch.
 - **"GUARD_RESTORE_START is out of slot order"**
-  - The restore time doesn't sit between the neighbours. Fix one of the three settings.
+  - The restore time doesn't sit between the neighbours. Fix one of the three settings. Config reports this (and duplicate starts) before anything runs.
 - **"Set GUARD_SLOT_PREV_START and GUARD_SLOT_NEXT_START before turning dry run off"**
   - Set both before going live.
 - **`reason: slot order not checked`**

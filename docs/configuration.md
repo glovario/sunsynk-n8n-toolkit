@@ -54,17 +54,18 @@ Columns:
 | `OCTOPUS_RETRY_DELAY_MS` | G | Base delay between tries (multiplied by the try number) | integer | ≥ 0 | `2000` | no | `2000` |
 | `GUARD_DRY_RUN` | G | Guard sends dry-run requests only | boolean | | `true` | yes (`false`) | `false` |
 | `GUARD_TIMEZONE` | G | Zone for the off-peak window and slot times | IANA zone | | `Europe/London` | no | `Europe/London` |
-| `GUARD_SLOT` | G, S | The one timer slot the guard writes | integer | 2–6 (Config accepts 1, but slot 1 is unsupported: see [known issues](#known-issues)) | `5` | no | `5` |
+| `GUARD_SLOT` | G, S | The one timer slot the guard writes | integer | 1–6 | `5` | no | `5` |
 | `GUARD_PROTECTED_SLOTS` | G | Slots never written | comma list | must not include `GUARD_SLOT` | `1,2,3,4,6` | no | `1,2,3,4,6` |
-| `GUARD_SLOT_PREV_START` | G | Start time of slot `GUARD_SLOT - 1` (there is no slot 0; don't use `GUARD_SLOT=1`) | `HH:MM` | | none | **yes** | `05:30` |
-| `GUARD_SLOT_NEXT_START` | G | Start time of slot `GUARD_SLOT + 1` (`00:00` if slot 6) | `HH:MM` | | none | **yes** | `23:30` |
+| `GUARD_SLOT_PREV_START` | G | Start time of slot `GUARD_SLOT - 1` (slot 6, from the day before, if `GUARD_SLOT=1`) | `HH:MM` | | none | **yes** | `05:30` |
+| `GUARD_SLOT_NEXT_START` | G | Start time of slot `GUARD_SLOT + 1` (slot 1, usually `00:00`, if `GUARD_SLOT=6`). With Sell enabled in that slot, must equal `SELL_START` | `HH:MM` | | none | **yes** | `23:30` |
 | `GUARD_CAP_SOC` | G | Battery target while armed | integer % | 10–100 | `100` | no | `100` |
-| `GUARD_RESTORE_START` | G | Slot start time put back afterwards | `HH:MM` | must sit between the neighbours | `18:00` | no | `18:00` |
+| `GUARD_RESTORE_START` | G | Slot start time put back afterwards | `HH:MM` | must sit between the neighbours, not equal either; with Sell enabled, not equal `SELL_START` | `16:00` | no | `16:00` |
 | `GUARD_RESTORE_CAP_SOC` | G | Battery target put back afterwards | integer % | 10–100 | `50` | no | `50` |
 | `GUARD_RESTORE_GRID_CHARGE` | G | Grid charge state put back afterwards | boolean | | `false` | no | `false` |
 | `GUARD_OFFPEAK_START` | G | Start of your normal cheap window | `HH:MM` | | `23:30` | no | `23:30` |
 | `GUARD_OFFPEAK_END` | G | End of your normal cheap window | `HH:MM` | | `05:30` | no | `05:30` |
 | `GUARD_LEAD_IN_MIN` | G | Arm at most this many minutes before an extra dispatch | integer | 0–120 | `20` | no | `20` |
+| `GUARD_ALERT_WORKFLOW_ID` | G | n8n workflow ID to call when an Octopus query fails (trigger: When Executed by Another Workflow, Accept all data). Blank = no alert | string | | blank | no | `aBcD1234eFgH5678` |
 | `GUARD_PLUG_STATE_URL` | G | Home Assistant state URL for "car plugged in". Blank turns the gate off | string | | blank | no | `http://homeassistant.local:8123/api/states/binary_sensor.car_plugged_in` |
 | `GUARD_PLUG_ON_STATES` | G | States that mean plugged in (compared in lower case) | comma list | | `on,plugged_in,true` | no | `on,plugged_in,true` |
 | `HA_TOKEN` | G | Home Assistant long-lived token (secret) | string | | empty | only with the plug gate | `change-me` |
@@ -99,9 +100,9 @@ Columns:
 - `GUARD_SLOT` is the only slot the guard writes, and `GUARD_PROTECTED_SLOTS` are never written. Config stops if the guard slot is in the protected list.
 - The **order rule:**
   - A slot's start must fall strictly after the previous slot's start and strictly before the next one's (`GUARD_SLOT_PREV_START < start < GUARD_SLOT_NEXT_START`).
-  - If `GUARD_SLOT_NEXT_START` is `00:00`, it's treated as 24:00, for slot 6.
+  - Only slot 1 and slot 6 may wrap past midnight. For slot 1 the previous slot is slot 6 from the day before (e.g. prev 23:30, next 05:30 allows 23:40 or 00:10). For slot 6 the next slot is slot 1 the day after (usually `00:00`). For slots 2–5, `GUARD_SLOT_PREV_START` must be earlier than `GUARD_SLOT_NEXT_START`.
   - When arming, the guard checks the arm start time against this rule. If the time falls outside it, the guard goes to `hold` and writes nothing.
-  - It also checks `GUARD_RESTORE_START`. If that's out of order, the run stops with an error.
+  - Config also checks `GUARD_RESTORE_START` against the neighbours and rejects duplicate starts (prev = next, or restore = a neighbour).
 - Leaving the neighbours blank skips the order check, which is allowed only in dry run. The guard reports "slot order not checked" in `reason`.
 - Keep the neighbours in step with your inverter. If you change slot 4 or 6 in the app, update them.
 
@@ -112,12 +113,13 @@ Columns:
   - The guard arms only for an extra dispatch that is running now or starts within this many minutes.
   - Timer slots have no date, so arming earlier would also affect today's matching time.
   - With the default 20 and the 10-minute schedule, a dispatch starting at 14:10 is first armed on the 13:50 run (20 minutes before).
-- **Retries:** `OCTOPUS_RETRIES` / `OCTOPUS_RETRY_DELAY_MS`. If every try fails, the run stops and nothing is changed.
+- **Retries:** `OCTOPUS_RETRIES` / `OCTOPUS_RETRY_DELAY_MS`. If every try fails, the guard falls back to stored state (keeps a verified arm until its stored end, otherwise restores) and the execution still succeeds (so the state is saved), calling your alert workflow if `GUARD_ALERT_WORKFLOW_ID` is set. See [safety.md](safety.md#alerting-on-octopus-failures).
 
 ### Evening Sell
 - On each run, Sell sets slot `SELL_SLOT` to start at `SELL_START`, turns grid charge off and sets `capN` to `SELL_FLOOR_SOC`. With `SELL_WRITE_ENABLE_FLAG=true`, it also sets `sellTimeNEn` (to `1` if `SELL_ENABLED`, otherwise `0`).
 - It runs daily at 17:55, so set `SELL_START` after that.
-- Sell doesn't check the slot order or `GUARD_PROTECTED_SLOTS`. Choose `SELL_SLOT` and `SELL_START` to fit your timer yourself. If `SELL_SLOT` is `GUARD_SLOT + 1`, set `GUARD_SLOT_NEXT_START` to `SELL_START`.
+- Sell doesn't check the slot order or `GUARD_PROTECTED_SLOTS`. Choose `SELL_SLOT` and `SELL_START` to fit your timer yourself. If `SELL_SLOT` is `GUARD_SLOT + 1`, set `GUARD_SLOT_NEXT_START` to `SELL_START` (or `GUARD_SLOT_PREV_START` if it's `GUARD_SLOT - 1`).
+- With `SELL_ENABLED=true`, the guard's Config enforces this and rejects `GUARD_RESTORE_START = SELL_START`. With Sell disabled, the `SELL_*` values (e.g. the ones in `example.env`) don't constrain the guard.
 
 ### Battery targets (SOC)
 - `GUARD_CAP_SOC` (10–100): the target while an extra dispatch runs. 100 lets the battery charge fully at the cheap rate.
@@ -187,7 +189,7 @@ SELL_START=18:00
 SELL_FLOOR_SOC=50
 ```
 
-Here `GUARD_RESTORE_START=16:00` sits between 05:30 and 18:00, so it passes the order check. The defaults (`GUARD_RESTORE_START=18:00` and `SELL_START=18:00`) would clash if you used both, because slot 5 and slot 6 can't start at the same time. An extra dispatch after 18:00 would also go to `hold` here, because slot 5 can't move past slot 6.
+Here `GUARD_RESTORE_START=16:00` sits between 05:30 and 18:00, so it passes the order check. 16:00 is also the default. An extra dispatch after 18:00 would also go to `hold` here, because slot 5 can't move past slot 6.
 
 The best timer layout for your house is **TBD** and depends on your inverter and tariff.
 
@@ -215,9 +217,14 @@ To go back to dry run at any time, set `SUNSYNK_WRITES_ENABLED=false`. That stop
 - `guard_cap_soc` / `restore_cap_soc must be 10-100`
 - `Set OCTOPUS_API_KEY and OCTOPUS_ACCOUNT env vars`
 - `Set SUNSYNK_INVERTER_SN`
+- `GUARD_SLOT_PREV_START and GUARD_SLOT_NEXT_START are a duplicate slot start (…)`
+- `GUARD_RESTORE_START … is a duplicate slot start of a neighbour slot`
+- `GUARD_RESTORE_START … is out of slot order (must be after … and before …)`
+- `GUARD_SLOT_PREV_START … / GUARD_SLOT_NEXT_START … are out of slot order (only slot 1 or 6 may cross midnight)`
+- With `SELL_ENABLED=true` only: `GUARD_RESTORE_START … is the same as SELL_START (duplicate slot start)`, and `Sell is slot N, the next slot: GUARD_SLOT_NEXT_START (…) must equal SELL_START (…)` (or the previous-slot equivalent)
 
 **Guard: Plan node.**
-- `GUARD_RESTORE_START is out of slot order. Nothing was changed.`
+- `GUARD_RESTORE_START is out of slot order. Nothing was changed.` (normally caught by Config first)
 - An arm time out of order gives `mode: hold` with a `reason` instead of an error.
 
 **Sell.** It stops at the first problem:
@@ -245,5 +252,4 @@ The schema describes them, but nothing enforces it at run time.
 
 ## Known issues
 
-- **`GUARD_SLOT=1` is unsupported.** Config accepts it, but the slot before slot 1 is really slot 6 from the previous day (for example 23:30). The guard's `inOrder` check compares plain `HH:MM` strings as `prev < start < next` and only special-cases `next = 00:00` for slot 6, so with a previous start like 23:30 every time fails the check and live runs hold or stop on restore. Don't enter a slot 0 time; use slots 2–6 for the guard until the code handles the wrap.
-- **Default `GUARD_RESTORE_START` and `SELL_START` are both `18:00`.** With the defaults (guard slot 5, Sell slot 6), the guard's restore start equals slot 6's start, so it fails the order check (`GUARD_RESTORE_START is out of slot order`) and two slots can't start at the same time anyway. If you use both workflows, set `GUARD_RESTORE_START` earlier than `SELL_START` (the [example](#worked-example) uses 16:00).
+None open in the guard's slot handling. Earlier issues (slot 1 unsupported, the 18:00 restore/Sell default clash, and an armed slot persisting through an Octopus outage) are fixed; see [safety.md](safety.md#fail-closed-paths).
