@@ -4,9 +4,10 @@ Every setting the toolkit reads, where it lives, and how to go from dry run to l
 
 ## Where settings live
 
+- **What goes where.** User-specific config and secrets (logins, inverter serial, device IDs, URLs, tokens, switches) go in **environment variables**. Workflow defaults are **embedded in the Code nodes** (the `env.X || default` fallbacks), so an unset variable uses the default listed below.
 - **Environment variables.**
   - Every setting is read from n8n **environment variables** through `$env` in the Code nodes.
-  - The workflow JSON holds no settings and no secrets.
+  - The workflow JSON contains only built-in defaults; no user-specific settings or credentials are stored there.
   - n8n can't read them unless `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
 - **n8n Variables** (the `$vars` feature) are **not used**. Values set there are ignored.
 - **The Home Assistant token** is also read from an environment variable, `HA_TOKEN`. Nothing is read from Home Assistant's `secrets.yaml`. The guard only calls the URL you give it, with `Authorization: Bearer <HA_TOKEN>`.
@@ -15,7 +16,7 @@ Every setting the toolkit reads, where it lives, and how to go from dry run to l
 ### Setting them in n8n
 
 1. Copy `config/example.env` to `.env`. Never commit it.
-2. Pass it to the n8n process, for example `docker run --env-file .env …`, or `env_file: .env` in docker compose. The right method depends on how you run n8n.
+2. Pass it to the n8n process, for example `docker run --env-file .env …`, or `env_file: .env` in docker compose. The right method depends on how you run n8n. `--env-file` takes everything after `=` literally, so keep comments on their own lines: `KEY=value # note` sets the value to `value # note`.
 3. If you use external task runners (`N8N_RUNNERS_MODE=external`), the Code nodes run on the runner, so the runner needs the variables too. For the `n8nio/runners` image, also allow them in `n8n-task-runners.json`. The exact allow-list format is **TBD**: check your runner image's docs.
 4. Restart n8n (and the runner). Each workflow reads the settings again on every run.
 
@@ -55,7 +56,7 @@ Columns:
 | `GUARD_DRY_RUN` | G | Guard sends dry-run requests only | boolean | | `true` | yes (`false`) | `false` |
 | `GUARD_TIMEZONE` | G | Zone for the off-peak window and slot times | IANA zone | | `Europe/London` | no | `Europe/London` |
 | `GUARD_SLOT` | G, S | The one timer slot the guard writes | integer | 1–6 | `5` | no | `5` |
-| `GUARD_PROTECTED_SLOTS` | G | Slots never written | comma list | must not include `GUARD_SLOT` | `1,2,3,4,6` | no | `1,2,3,4,6` |
+| `GUARD_PROTECTED_SLOTS` | G | Slots the IO EV Guard must never modify | comma list | must not include `GUARD_SLOT` | `1,2,3,4,6` | no | `1,2,3,4,6` |
 | `GUARD_SLOT_PREV_START` | G | Start time of slot `GUARD_SLOT - 1` (slot 6, from the day before, if `GUARD_SLOT=1`) | `HH:MM` | | none | **yes** | `05:30` |
 | `GUARD_SLOT_NEXT_START` | G | Start time of slot `GUARD_SLOT + 1` (slot 1, usually `00:00`, if `GUARD_SLOT=6`). With Sell enabled in that slot, must equal `SELL_START` | `HH:MM` | | none | **yes** | `23:30` |
 | `GUARD_CAP_SOC` | G | Battery target while armed | integer % | 10–100 | `100` | no | `100` |
@@ -67,7 +68,7 @@ Columns:
 | `GUARD_LEAD_IN_MIN` | G | Arm at most this many minutes before an extra dispatch | integer | 0–120 | `20` | no | `20` |
 | `GUARD_ALERT_WORKFLOW_ID` | G | n8n workflow ID to call when an Octopus query fails (trigger: When Executed by Another Workflow, Accept all data). Blank = no alert | string | | blank | no | `aBcD1234eFgH5678` |
 | `GUARD_PLUG_STATE_URL` | G | Home Assistant state URL for "car plugged in". Blank turns the gate off | string | | blank | no | `http://homeassistant.local:8123/api/states/binary_sensor.car_plugged_in` |
-| `GUARD_PLUG_ON_STATES` | G | States that mean plugged in (compared in lower case) | comma list | | `on,plugged_in,true` | no | `on,plugged_in,true` |
+| `GUARD_PLUG_ON_STATES` | G | States that mean plugged in. Entries and the Home Assistant state are trimmed and lower-cased, so `on, plugged_in` works | comma list | | `on,plugged_in,true` | no | `on,plugged_in,true` |
 | `HA_TOKEN` | G | Home Assistant long-lived token (secret) | string | | empty | only with the plug gate | `change-me` |
 | `SELL_ENABLED` | S | Turns Sell on | boolean | | `false` | for Sell (`true`) | `true` |
 | `SELL_DRY_RUN` | S | Sell sends dry-run requests only | boolean | | `true` | for Sell (`false`) | `false` |
@@ -76,7 +77,7 @@ Columns:
 | `SELL_FLOOR_SOC` | S | Battery floor for the Sell slot (written as `capN`) | integer % | 20–100 | `50` | no | `50` |
 | `SELL_WRITE_ENABLE_FLAG` | S | Also write `sellTimeNEn` | boolean | | `false` | no | `false` |
 
-`config/schema.json` lists only `SUNSYNK_USERNAME`, `SUNSYNK_PASSWORD` and `SUNSYNK_INVERTER_SN` as required. The table marks what you actually need in order to run the guard live. `example.env` and `schema.json` list the same 37 settings.
+`config/schema.json` lists only `SUNSYNK_USERNAME`, `SUNSYNK_PASSWORD` and `SUNSYNK_INVERTER_SN` as required. The table marks what you actually need in order to run the guard live. `example.env` and `schema.json` list the same settings; `node tests/run.js` fails if they drift apart or if any value in `example.env` breaks the schema.
 
 ## Settings by group
 
@@ -97,7 +98,9 @@ Columns:
 - `SUNSYNK_API_HOST`: use `pv.inteless.com` for Deye/Inteless accounts. That host is untested.
 
 ### Timer slots
-- `GUARD_SLOT` is the only slot the guard writes, and `GUARD_PROTECTED_SLOTS` are never written. Config stops if the guard slot is in the protected list.
+- `GUARD_SLOT` is the only slot the guard writes. `GUARD_PROTECTED_SLOTS` are the slots the IO EV Guard must never modify. Config stops if the guard slot is in the protected list.
+- `GUARD_PROTECTED_SLOTS` binds only the guard. Evening Sell and Sunsynk Control have separate permissions: Sell writes `SELL_SLOT` and checks only that it differs from `GUARD_SLOT`; Control applies its own per-command field allow-list.
+- The default Sell slot (`SELL_SLOT=6`) is on the guard's default protected list (`1,2,3,4,6`), so the guard never touches the Sell slot.
 - The **order rule:**
   - A slot's start must fall strictly after the previous slot's start and strictly before the next one's (`GUARD_SLOT_PREV_START < start < GUARD_SLOT_NEXT_START`).
   - Only slot 1 and slot 6 may wrap past midnight. For slot 1 the previous slot is slot 6 from the day before (e.g. prev 23:30, next 05:30 allows 23:40 or 00:10). For slot 6 the next slot is slot 1 the day after (usually `00:00`). For slots 2–5, `GUARD_SLOT_PREV_START` must be earlier than `GUARD_SLOT_NEXT_START`.

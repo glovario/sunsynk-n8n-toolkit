@@ -485,6 +485,79 @@ test('Octopus throw no longer claims nothing was changed', async () => {
   assert.ok(!/Nothing was changed/.test(code(guard, 'Octopus Dispatches')));
 });
 
+// ---- Audit: config/example.env must load under `docker run --env-file` and match config/schema.json
+// docker --env-file: each line is KEY=VALUE taken literally (no quote stripping, no inline comments);
+// a line starting with # is a comment; blank lines are ignored.
+function parseEnvFile(text) {
+  const out = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (line.trim() === '' || line.trimStart().startsWith('#')) return;
+    const eq = line.indexOf('=');
+    if (eq < 1) throw new Error(`line ${i + 1}: not KEY=VALUE: ${line}`);
+    out.push({ line: i + 1, key: line.slice(0, eq), value: line.slice(eq + 1) });
+  });
+  return out;
+}
+function checkValue(key, value, spec, required) {
+  if (value === '') return required ? 'required but blank' : null;
+  if (/\s#|^#/.test(value)) return 'looks like an inline comment';
+  if (value !== value.trim()) return 'has leading/trailing whitespace';
+  if (spec.enum && !spec.enum.includes(value)) return `not one of ${spec.enum.join(', ')}`;
+  if (spec.type === 'boolean' && !['true', 'false'].includes(value)) return 'not true/false';
+  if (spec.type === 'integer') {
+    if (!/^-?\d+$/.test(value)) return 'not an integer';
+    const n = Number(value);
+    if (spec.minimum !== undefined && n < spec.minimum) return `below ${spec.minimum}`;
+    if (spec.maximum !== undefined && n > spec.maximum) return `above ${spec.maximum}`;
+  }
+  if (spec.pattern && !new RegExp(spec.pattern).test(value)) return `doesn't match ${spec.pattern}`;
+  if (spec.format === 'uri' && !/^https?:\/\/\S+$/.test(value)) return 'not a URL';
+  return null;
+}
+// Returns every problem with an env-file's content measured against the schema (empty = OK).
+function checkEnvAgainstSchema(content, schema) {
+  const errs = [], seen = new Set();
+  for (const { line, key, value } of parseEnvFile(content)) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) errs.push(`line ${line}: bad key ${JSON.stringify(key)}`);
+    if (seen.has(key)) errs.push(`line ${line}: ${key} repeated`); seen.add(key);
+    const spec = schema.properties[key];
+    if (!spec) { errs.push(`line ${line}: ${key} not in schema.json`); continue; }
+    const e = checkValue(key, value, spec, (schema.required || []).includes(key));
+    if (e) errs.push(`line ${line}: ${key}=${JSON.stringify(value)} ${e}`);
+  }
+  // Both directions: every schema key, required or optional, must appear in the env file.
+  for (const k of Object.keys(schema.properties)) if (!seen.has(k)) errs.push(`${(schema.required || []).includes(k) ? 'required' : 'optional'} ${k} in schema.json but missing from example.env`);
+  return errs;
+}
+const readSchema = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'schema.json'), 'utf8'));
+const readExampleEnv = () => fs.readFileSync(path.join(__dirname, '..', 'config', 'example.env'), 'utf8');
+test('config/example.env parses like docker --env-file and every value matches config/schema.json', async () => {
+  assert.deepStrictEqual(checkEnvAgainstSchema(readExampleEnv(), readSchema()), []);
+});
+test('schema/example check fails when example.env omits an optional schema key (GUARD_ALERT_WORKFLOW_ID)', async () => {
+  const schema = readSchema();
+  assert.ok(schema.properties.GUARD_ALERT_WORKFLOW_ID && !(schema.required || []).includes('GUARD_ALERT_WORKFLOW_ID'));
+  const content = readExampleEnv().split('\n').filter((l) => !l.startsWith('GUARD_ALERT_WORKFLOW_ID=')).join('\n');
+  const errs = checkEnvAgainstSchema(content, schema);
+  assert.ok(errs.some((e) => e.includes('GUARD_ALERT_WORKFLOW_ID')), `expected a missing-key error, got ${JSON.stringify(errs)}`);
+});
+test('env-file parser keeps inline comments in the value, as docker does', async () => {
+  const [e] = parseEnvFile('# c\n\nA=1   # note\n');
+  assert.strictEqual(e.value, '1   # note');
+  assert.ok(checkValue('A', e.value, { type: 'integer' }, false));
+});
+
+// ---- Audit: GUARD_PLUG_ON_STATES entries and the HA state are trimmed and lower-cased
+for (const [label, list, haState] of [['"on, plugged_in" / plugged_in', 'on, plugged_in', 'plugged_in'], ['" On ,Plugged_In" / " ON "', ' On ,Plugged_In', ' ON ']]) {
+  test(`plug gate on-states ${label}: arms`, async () => {
+    const cfg = await cfgFor({ GUARD_PLUG_STATE_URL: 'http://ha/plug', GUARD_PLUG_ON_STATES: list });
+    const p = await plan([{ start: '2026-11-02T14:10:00Z', end: '2026-11-02T15:00:00Z' }], '2026-11-02T14:00:00Z');
+    const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv,
+      http: async (r) => (r.url === 'http://ha/plug' ? { state: haState } : { ok: true, dry_run: true }) });
+    assert.strictEqual(out.plugged, true); assert.strictEqual(out.mode, 'arm');
+  });
+}
+
 (async () => {
   let fail = 0;
   for (const [name, f] of tests) {

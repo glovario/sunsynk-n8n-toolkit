@@ -11,7 +11,7 @@ node tests/run.js
 - **Network:** nothing goes to the network or to an inverter.
 - **Exit code:** 0 when every test passes, 1 otherwise.
 
-Currently **45/45** pass. They cover:
+CI runs them on every push and pull request ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)), together with a gitleaks secret scan. They cover:
 - arm then unplugged, which writes the restore settings
 - dry-run replies not cached, then a real write, then `no_change`, then a failed write
 - Octopus: GraphQL error on devices, missing `flexPlannedDispatches` data, a retried network error, and Plan never arming without a successful query

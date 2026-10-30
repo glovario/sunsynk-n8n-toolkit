@@ -1,5 +1,7 @@
 # sunsynk-n8n-toolkit
 
+[![CI](https://github.com/glovario/sunsynk-n8n-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/glovario/sunsynk-n8n-toolkit/actions/workflows/ci.yml)
+
 Three [n8n](https://n8n.io) workflows that change the timer settings on a **Sunsynk** hybrid inverter through the Sunsynk Connect cloud API (`api.sunsynk.net`). They're for people on **Intelligent Octopus** with an EV, a Sunsynk battery and their own n8n instance, who want the battery to behave properly when Octopus hands the car extra cheap charging slots.
 
 > ⚠️ Read [DISCLAIMER.md](DISCLAIMER.md) first. This uses an unofficial API to write settings to your inverter. **All writes are off by default.**
@@ -17,6 +19,7 @@ Three [n8n](https://n8n.io) workflows that change the timer settings on a **Suns
 - [Troubleshooting](docs/troubleshooting.md)
 - [FAQ](docs/faq.md)
 - [Timer quirks](docs/timer-quirks.md)
+- [Validation status](docs/validation-status.md): what has not yet been confirmed on real hardware
 
 ## The problem it solves
 
@@ -139,7 +142,7 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 | `OCTOPUS_API_KEY`, `OCTOPUS_ACCOUNT` | none | Required for the guard. |
 | `OCTOPUS_EV_DEVICE_ID` | blank | Blank uses the first EV or charger on the account. |
 | `GUARD_SLOT` | `5` | The only timer slot the guard writes (1–6). For slot 1 the previous slot is slot 6 from the day before. |
-| `GUARD_PROTECTED_SLOTS` | `1,2,3,4,6` | Slots never written. Must not include `GUARD_SLOT`. |
+| `GUARD_PROTECTED_SLOTS` | `1,2,3,4,6` | Slots the IO EV Guard must never modify. Must not include `GUARD_SLOT`. Evening Sell and Sunsynk Control don't read it. |
 | `GUARD_SLOT_PREV_START`, `GUARD_SLOT_NEXT_START` | blank | Start times of the neighbouring slots (slot 6's start for prev if `GUARD_SLOT=1`; slot 1's start, usually `00:00`, for next if `GUARD_SLOT=6`). Required to leave dry run. |
 | `GUARD_CAP_SOC` | `100` | Battery target while armed (10–100). |
 | `GUARD_RESTORE_START`, `GUARD_RESTORE_CAP_SOC`, `GUARD_RESTORE_GRID_CHARGE` | `16:00`, `50`, `false` | What the slot is put back to. The start must sit between the neighbours and, with Sell enabled, differ from `SELL_START`. |
@@ -188,7 +191,9 @@ The Sunsynk timer has some odd behaviour: two spellings of grid charge, "success
 
 ## Tested status
 
-- **Offline tests: 45/45 pass.** Run `node tests/run.js`.
+What still needs a live run is listed in **[Validation status](docs/validation-status.md)**.
+
+- **Offline tests** run on every push and pull request in [CI](.github/workflows/ci.yml) (see the badge above). Run them locally with `node tests/run.js`.
   - The tests run the real Code-node source from the workflow files with mocked n8n, Octopus, Sunsynk and Home Assistant replies. No network or inverter is needed.
   - They cover: arming then unplugging, dry run then writes on, Octopus errors and retries, dispatches later today and tomorrow, slot order, both UK clock changes, a stable start time across polls, plug-state failures, and blocked `crypto`.
 - **Live integration test: pending.** The workflows haven't yet been run end to end against a real inverter. Not yet tested:
