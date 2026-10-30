@@ -193,7 +193,7 @@ The best timer layout for your house is **TBD** and depends on your inverter and
 
 ## Going from dry run to live
 
-Before you switch on writes, read [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery). Turning writes off later does not undo a slot the guard has already armed.
+Before you switch on writes, read [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery). Turning writes off later does not undo a slot the guard has already armed: to recover, disable writes first, then restore the slot by hand and verify.
 
 1. Run everything in dry run for a few days. Check that the guard's `mode`, `extra_start`/`extra_end` and `params` look right, and that Control returns `would_write`.
 2. Set `GUARD_SLOT_PREV_START` and `GUARD_SLOT_NEXT_START` to match the inverter. Check that no run reports `hold` or "slot order not checked" unexpectedly.

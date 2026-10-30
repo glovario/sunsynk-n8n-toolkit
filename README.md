@@ -138,7 +138,7 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 | `SUNSYNK_INVERTER_SN` | none | Inverter serial, 6–12 digits. |
 | `OCTOPUS_API_KEY`, `OCTOPUS_ACCOUNT` | none | Required for the guard. |
 | `OCTOPUS_EV_DEVICE_ID` | blank | Blank uses the first EV or charger on the account. |
-| `GUARD_SLOT` | `5` | The only timer slot the guard writes (1–6). |
+| `GUARD_SLOT` | `5` | The only timer slot the guard writes. Supported: 2–6. Slot 1 is unsupported (Config still technically accepts it): see [known issues](docs/configuration.md#known-issues). |
 | `GUARD_PROTECTED_SLOTS` | `1,2,3,4,6` | Slots never written. Must not include `GUARD_SLOT`. |
 | `GUARD_SLOT_PREV_START`, `GUARD_SLOT_NEXT_START` | blank | Start times of the neighbouring slots (`00:00` for next if `GUARD_SLOT=6`). Required to leave dry run. |
 | `GUARD_CAP_SOC` | `100` | Battery target while armed (10–100). |

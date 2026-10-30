@@ -56,5 +56,5 @@ Before going live, read the [manual recovery procedure](safety.md#emergency-manu
 - [ ] Across a UK clock change (if possible), the off-peak edges are still treated as normal off-peak.
 
 ### Rollback
-1. Restore the inverter first: follow [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery). Disabling writes alone leaves an armed slot in place.
-2. Then set `SUNSYNK_WRITES_ENABLED=false` and restart n8n, or deactivate Sunsynk Control.
+1. Disable future writes first: deactivate Sunsynk Control, or set `SUNSYNK_WRITES_ENABLED=false` and restart n8n. This does not restore the timer.
+2. Restore the slot and grid charge by hand in the Sunsynk app, then re-open the timer and verify. See [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery).

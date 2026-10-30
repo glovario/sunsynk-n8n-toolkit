@@ -24,7 +24,7 @@ No. Everything goes through the Sunsynk cloud API.
 Timer slots are daily times with no date. Arming early would also change today's slot at that time. So it arms at most `GUARD_LEAD_IN_MIN` (default 20) minutes ahead.
 
 **What if Octopus is down?**
-The run stops and nothing changes. It never treats a failed query as "no dispatches".
+The run stops and this run makes no new changes. It never treats a failed query as "no dispatches". But if an earlier run armed the slot, that setting stays on the inverter and can import at peak rates after the dispatch ends: see the [Octopus outage limitation](safety.md#fail-closed-paths). If failures continue, check the slot by hand and follow the [manual recovery procedure](safety.md#emergency-manual-recovery).
 
 **What if Home Assistant is down?**
 With the plug gate set, the guard restores the slot instead of arming, and reports `plug_error`. Without the plug gate, Home Assistant isn't used.
@@ -41,7 +41,7 @@ Set `SUNSYNK_WRITES_ENABLED=false` and restart n8n, or deactivate Sunsynk Contro
 
 This only **disables the automation**. It stops *future* writes; it does not undo anything already on the inverter. If the guard has armed its slot (`timeNOn=1`, `capN=100` or your `GUARD_CAP_SOC`, and a moved `sellTimeN`), those settings stay, and the guard can't send its restore while writes are off. Stopping during an extra dispatch can leave grid charging on into peak-rate hours.
 
-To **restore the inverter to a safe state**, follow the [manual recovery procedure](safety.md#emergency-manual-recovery) before or alongside disabling writes.
+To **restore the inverter to a safe state**, follow the [manual recovery procedure](safety.md#emergency-manual-recovery): disable writes first, then restore the slot by hand in the Sunsynk app, then verify.
 
 **Can I test it without an inverter?**
 Yes: `node tests/run.js`. See [testing.md](testing.md).

@@ -67,15 +67,11 @@ A real write needs every one of these.
 
 ## Emergency manual recovery
 
-Disabling the automation (`SUNSYNK_WRITES_ENABLED=false`, or deactivating Control) is not the same as restoring the inverter. Anything already written stays on the inverter. To get back to a safe state:
+Disabling the automation is not the same as restoring the inverter. Anything already written stays on the inverter. Do it in this order, so the guard (which polls every 10 minutes) can't re-arm the slot after you've fixed it:
 
-1. In the Sunsynk app, open the system timer and find slot `GUARD_SLOT` (and `SELL_SLOT` if you use Sell).
-2. Check its start time (`sellTimeN`), grid charge (`timeNOn`) and battery target (`capN`). An armed guard slot shows grid charge on, a target of `GUARD_CAP_SOC` (default 100) and a start moved to the dispatch time.
-3. Put back the settings you intend: normally your `GUARD_RESTORE_START`, `GUARD_RESTORE_GRID_CHARGE` and `GUARD_RESTORE_CAP_SOC` values. Leave protected slots alone.
-4. Save, then re-open the timer and confirm the values took.
-5. Then disable writes (`SUNSYNK_WRITES_ENABLED=false` and restart n8n, or deactivate Sunsynk Control) if you want the automation off.
-
-If you leave writes on instead, the next successful guard run with no active dispatch sends the restore itself, but only once Octopus is answering.
+1. **Disable future automatic writes first:** deactivate Sunsynk Control, or set `SUNSYNK_WRITES_ENABLED=false` and restart n8n. This does **not** restore the timer. An armed slot stays armed.
+2. **Restore the slot by hand in the Sunsynk app:** open the system timer, find slot `GUARD_SLOT` (and `SELL_SLOT` if you use Sell), and check its start time (`sellTimeN`), grid charge (`timeNOn`) and battery target (`capN`). An armed guard slot shows grid charge on, a target of `GUARD_CAP_SOC` (default 100) and a start moved to the dispatch time. Put back the settings you intend, normally your `GUARD_RESTORE_START`, `GUARD_RESTORE_GRID_CHARGE` and `GUARD_RESTORE_CAP_SOC` values. Leave protected slots alone.
+3. **Verify:** save, re-open the timer and confirm the values took.
 
 ## What it doesn't protect against
 
