@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in one of the workflows doesn't work as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Please check [troubleshooting](https://github.com/glovario/sunsynk-n8n-toolkit/blob/main/docs/troubleshooting.md) first.
+        **Don't paste passwords, tokens, API keys, account numbers or inverter serials.** Replace them with placeholders.
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Which workflow?
+      options:
+        - io-ev-guard
+        - evening-sell
+        - sunsynk-control
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Dry run or live?
+      options:
+        - Dry run
+        - Live (writes on)
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+      description: What did you see? Include the action, mode, reason or error message if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: n8n
+    attributes:
+      label: n8n version
+      placeholder: e.g. 1.x.x, Docker / npm
+    validations:
+      required: true
+  - type: input
+    id: inverter
+    attributes:
+      label: Inverter model and firmware
+      placeholder: e.g. Sunsynk 5kW, firmware version
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant diagnostics or output
+      description: The node output or error, with secrets removed.
+      render: text
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Secrets
+      options:
+        - label: I have removed all credentials, tokens, API keys, account numbers and serials from this report.
+          required: true

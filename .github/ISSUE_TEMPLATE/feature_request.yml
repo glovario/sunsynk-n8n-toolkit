@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an idea or improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Which workflow does it affect?
+      options:
+        - io-ev-guard
+        - evening-sell
+        - sunsynk-control
+        - new workflow
+        - docs
+        - other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything else you've considered?
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Secrets
+      options:
+        - label: I haven't included any credentials, tokens, API keys, account numbers or serials.
+          required: true
