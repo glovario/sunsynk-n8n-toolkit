@@ -138,11 +138,11 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 | `SUNSYNK_INVERTER_SN` | none | Inverter serial, 6–12 digits. |
 | `OCTOPUS_API_KEY`, `OCTOPUS_ACCOUNT` | none | Required for the guard. |
 | `OCTOPUS_EV_DEVICE_ID` | blank | Blank uses the first EV or charger on the account. |
-| `GUARD_SLOT` | `5` | The only timer slot the guard writes. Supported: 2–6. Slot 1 is unsupported (Config still technically accepts it): see [known issues](docs/configuration.md#known-issues). |
+| `GUARD_SLOT` | `5` | The only timer slot the guard writes (1–6). For slot 1 the previous slot is slot 6 from the day before. |
 | `GUARD_PROTECTED_SLOTS` | `1,2,3,4,6` | Slots never written. Must not include `GUARD_SLOT`. |
-| `GUARD_SLOT_PREV_START`, `GUARD_SLOT_NEXT_START` | blank | Start times of the neighbouring slots (`00:00` for next if `GUARD_SLOT=6`). Required to leave dry run. |
+| `GUARD_SLOT_PREV_START`, `GUARD_SLOT_NEXT_START` | blank | Start times of the neighbouring slots (slot 6's start for prev if `GUARD_SLOT=1`; slot 1's start, usually `00:00`, for next if `GUARD_SLOT=6`). Required to leave dry run. |
 | `GUARD_CAP_SOC` | `100` | Battery target while armed (10–100). |
-| `GUARD_RESTORE_START`, `GUARD_RESTORE_CAP_SOC`, `GUARD_RESTORE_GRID_CHARGE` | `18:00`, `50`, `false` | What the slot is put back to. |
+| `GUARD_RESTORE_START`, `GUARD_RESTORE_CAP_SOC`, `GUARD_RESTORE_GRID_CHARGE` | `16:00`, `50`, `false` | What the slot is put back to. The start must sit between the neighbours and, with Sell enabled, differ from `SELL_START`. |
 | `GUARD_OFFPEAK_START`, `GUARD_OFFPEAK_END` | `23:30`, `05:30` | Your normal cheap window. Dispatches inside it are ignored. |
 | `GUARD_TIMEZONE` | `Europe/London` | Used for the off-peak window and slot times. |
 | `GUARD_LEAD_IN_MIN` | `20` | Arm at most this many minutes before an extra dispatch (0–120). |
@@ -169,7 +169,7 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 
 **Fail-closed cases.**
 
-- An Octopus API or GraphQL error, or missing data, stops the run after retries. It's never treated as "no dispatches", so a failed query doesn't trigger a restore.
+- An Octopus API or GraphQL error, or missing data, is never treated as "no dispatches" and never arms anything new. The guard keeps an arm only if it was verified on the inverter and its stored dispatch end hasn't passed; otherwise it restores. The execution is then marked failed so an n8n error workflow can alert you.
 - A bad config stops the run before anything is sent.
 - An arm start time out of slot order means `hold`, and nothing is written.
 - **Car unplugged** (plug gate on): the guard writes the restore settings instead of arming.
@@ -187,7 +187,7 @@ The Sunsynk timer has some odd behaviour: two spellings of grid charge, "success
 
 ## Tested status
 
-- **Offline tests: 22/22 pass.** Run `node tests/run.js`.
+- **Offline tests: 45/45 pass.** Run `node tests/run.js`.
   - The tests run the real Code-node source from the workflow files with mocked n8n, Octopus, Sunsynk and Home Assistant replies. No network or inverter is needed.
   - They cover: arming then unplugging, dry run then writes on, Octopus errors and retries, dispatches later today and tomorrow, slot order, both UK clock changes, a stable start time across polls, plug-state failures, and blocked `crypto`.
 - **Live integration test: pending.** The workflows haven't yet been run end to end against a real inverter. Not yet tested:
@@ -203,7 +203,7 @@ The Sunsynk timer has some odd behaviour: two spellings of grid charge, "success
 
 - **Login failed:** turn off MFA on the Sunsynk account, or use a separate account without MFA.
 - **"needs Node's built-in 'crypto' module":** see Prerequisites.
-- **"Octopus … failed after 3 tries":** an Octopus API or GraphQL error. Nothing was changed, and it tries again on the next run.
+- **"Octopus … failed after 3 tries":** an Octopus API or GraphQL error. The guard keeps a verified arm until its stored dispatch end, otherwise restores the slot, then fails the execution so your n8n error workflow alerts. It tries Octopus again on the next run. See [docs/safety.md](docs/safety.md#alerting-on-octopus-failures).
 - **"Config: …":** the message lists every setting that's wrong.
 - **`mismatches` after a write:** see the timer quirks.
 - **`plug_error` in the guard output:** check `GUARD_PLUG_STATE_URL` and `HA_TOKEN`. The guard restores the slot until it can read the plug again.

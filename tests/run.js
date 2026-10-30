@@ -228,9 +228,10 @@ test('arm stores the dispatch start and end', async () => {
   assert.strictEqual(p.mode, 'arm');
   assert.strictEqual(state.arm.end, '2026-11-02T15:00:00.000Z'); assert.strictEqual(state.arm.key, '2026-11-02T13:55:00.000Z');
 });
-test('Octopus fails mid-dispatch: stays armed with the stored start until the stored end', async () => {
-  const cfg = await cfgFor({}); const state = {};
-  await planWith(cfg, { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, state, '2026-11-02T14:00:00Z');
+test('Octopus fails mid-dispatch after a verified arm: stays armed with the stored start until the stored end', async () => {
+  const cfg = await cfgFor({ GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' }); const state = {};
+  const p0 = await planWith(cfg, { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] }, state, '2026-11-02T14:00:00Z');
+  await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p0 }, env: baseEnv, state, http: async () => ({ ok: true, dry_run: false }) });
   const p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:30:00Z');
   assert.strictEqual(p.mode, 'arm'); assert.strictEqual(p.params.sellTime5, '14:00');
   assert.match(p.octopus_error, /ETIMEDOUT/); assert.ok(state.arm);
@@ -297,7 +298,7 @@ test('default GUARD_RESTORE_START is not the SELL_START default (18:00)', async 
 });
 test('GUARD_RESTORE_START equal to SELL_START is rejected', async () => {
   await assert.rejects(cfgFor({ GUARD_RESTORE_START: '18:00', SELL_ENABLED: 'true' }), /GUARD_RESTORE_START.*SELL_START/);
-  await assert.rejects(cfgFor({ GUARD_RESTORE_START: '17:00', SELL_START: '17:00' }), /GUARD_RESTORE_START.*SELL_START/);
+  await assert.rejects(cfgFor({ GUARD_RESTORE_START: '17:00', SELL_START: '17:00', SELL_ENABLED: 'true' }), /GUARD_RESTORE_START.*SELL_START/);
 });
 test('duplicate neighbour starts are rejected', async () => {
   await assert.rejects(cfgFor({ GUARD_SLOT_PREV_START: '18:00', GUARD_SLOT_NEXT_START: '18:00' }), /duplicate/);
@@ -312,6 +313,67 @@ test('Sell as the next slot: GUARD_SLOT_NEXT_START must be SELL_START', async ()
   await assert.rejects(cfgFor({ SELL_ENABLED: 'true', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' }), /GUARD_SLOT_NEXT_START.*SELL_START/);
   const ok = await cfgFor({ SELL_ENABLED: 'true', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00' });
   assert.strictEqual(ok.slot_next_start, '18:00');
+});
+
+// ---- Review 5718795915 P1a: disabled Sell must not constrain the guard
+test('SELL_ENABLED=false with SELL_START=18:00 and GUARD_SLOT_NEXT_START=23:30 passes Config', async () => {
+  const cfg = await cfgFor({ SELL_ENABLED: 'false', SELL_SLOT: '6', SELL_START: '18:00', GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' });
+  assert.strictEqual(cfg.slot_next_start, '23:30');
+  await assert.rejects(cfgFor({ SELL_ENABLED: 'false', SELL_START: '18:00', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '18:00', GUARD_RESTORE_START: '19:00' }), /out of slot order/); // guard's own order check stays
+});
+
+// ---- Review 5718795915 P1b: outage may keep only an arm that Gate And Send verified
+const OUTAGE_ENV = { GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30', GUARD_PLUG_STATE_URL: 'http://ha/plug' };
+const DISP = { query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end: '2026-11-02T15:00:00Z' }] };
+for (const [label, reply, plugState, wantAction] of [
+  ['dry-run', { ok: true, dry_run: true }, 'on', 'dry_run'],
+  ['failed read-back', { ok: false, dry_run: false, mismatches: ['cap5'] }, 'on', 'write_failed'],
+  ['plug-rejected', { ok: true, dry_run: false }, 'off', 'written'],
+]) {
+  test(`unverified arm (${label}) then Octopus outage restores; no new arm write`, async () => {
+    const cfg = await cfgFor(OUTAGE_ENV); const state = {}; const sent = [];
+    const gate = (p, r) => run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state,
+      http: async (q) => { if (q.url === 'http://ha/plug') return { state: plugState }; sent.push(q.body); return r; } });
+    let p = await planWith(cfg, DISP, state, '2026-11-02T14:00:00Z');
+    assert.strictEqual(p.mode, 'arm');
+    const first = await gate(p, reply); assert.strictEqual(first.action, wantAction);
+    sent.length = 0;
+    p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:10:00Z');   // outage, within the dispatch
+    assert.strictEqual(p.mode, 'restore'); assert.ok(p.octopus_error);
+    const out = await gate(p, { ok: true, dry_run: false });           // writes now enabled
+    assert.strictEqual(out.mode, 'restore');
+    for (const b of sent) assert.notStrictEqual(b.params.time5On, '1');
+    assert.ok(!sent.some((b) => b.params.cap5 === 100));
+  });
+}
+test('verified arm (written + read back) then outage within the stored end stays armed, no rewrite', async () => {
+  const cfg = await cfgFor(OUTAGE_ENV); const state = {}; let writes = 0;
+  const gate = (p) => run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state,
+    http: async (q) => (q.url === 'http://ha/plug' ? { state: 'on' } : (writes++, { ok: true, dry_run: false })) });
+  assert.strictEqual((await gate(await planWith(cfg, DISP, state, '2026-11-02T14:00:00Z'))).action, 'written');
+  assert.ok(state.committed_arm);
+  const p = await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:40:00Z');
+  assert.strictEqual(p.mode, 'arm'); assert.strictEqual(p.params.sellTime5, '14:00');
+  const before = writes; assert.strictEqual((await gate(p)).action, 'no_change'); assert.strictEqual(writes, before);
+});
+
+// ---- Review 5718795915 P2: outage stays visible as a failed execution, after the fallback is written
+test('Octopus Alert fails the execution after Gate And Send when octopus_error is set', async () => {
+  assert.strictEqual(guard.connections['Gate And Send'].main[0][0].node, 'Octopus Alert');
+  const src = code(guard, 'Octopus Alert');
+  const ok = await run(src, { nodes: { 'Gate And Send': { mode: 'arm', octopus_error: null, action: 'no_change' } } });
+  assert.strictEqual(ok.mode, 'arm');
+  await assert.rejects(run(src, { nodes: { 'Gate And Send': { mode: 'restore', action: 'written', octopus_error: 'boom', octopus_failures: 3 } } }),
+    /Octopus unavailable \(3 consecutive runs\).*boom.*restore.*written/);
+});
+test('consecutive Octopus failures are counted and reset on success', async () => {
+  const cfg = await cfgFor({}); const state = {};
+  assert.strictEqual((await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:00:00Z')).octopus_failures, 1);
+  assert.strictEqual((await planWith(cfg, OCT_FAIL, state, '2026-11-02T14:10:00Z')).octopus_failures, 2);
+  assert.strictEqual((await planWith(cfg, { query_ok: true, device_found: true, planned: [] }, state, '2026-11-02T14:20:00Z')).octopus_failures, 0);
+});
+test('Octopus throw no longer claims nothing was changed', async () => {
+  assert.ok(!/Nothing was changed/.test(code(guard, 'Octopus Dispatches')));
 });
 
 (async () => {

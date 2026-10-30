@@ -5,7 +5,7 @@ The guard holds the house battery during Intelligent Octopus extra dispatches, u
 ## Nodes
 
 ```
-Every 10 minutes → Config → Octopus Dispatches → Plan → Gate And Send
+Every 10 minutes → Config → Octopus Dispatches → Plan → Gate And Send → Octopus Alert
 ```
 
 ### 1. Every 10 minutes (schedule trigger)
@@ -23,13 +23,13 @@ Cron `*/10 * * * *`.
 
 Each query is tried up to `OCTOPUS_RETRIES` times, with a delay of `OCTOPUS_RETRY_DELAY_MS × try number`.
 - A query fails if the reply is empty, has GraphQL `errors`, has no `data`, or is missing the expected field.
-- After the last try, the run stops: `Octopus <query> failed after N tries: … Nothing was changed.`
-- A dispatch with an unparseable start or end also stops the run.
+- After the last try, the node throws `Octopus <query> failed after N tries: …`. A dispatch with an unparseable start or end also throws.
+- The node is set to **continue on error** (`onError: continueRegularOutput`), so n8n passes `{ error }` to Plan instead of stopping.
 
 Output: `{ query_ok: true, device_found: true, planned }`.
 
 ### 4. Plan (Code)
-- **Refuses to run** unless the Octopus step returned `query_ok: true` and a `planned` list.
+- **Octopus failed** (no `query_ok: true` + `planned` list): `octopus_error` is set and `octopus_failures` (consecutive) is incremented; it resets on success. Plan never arms a new dispatch. It returns `mode: arm` with the stored start only if `committed_arm` (written by Gate And Send after a verified arm) matches the stored `arm` and the stored end hasn't passed; otherwise `mode: restore` and the stored `arm` is cleared.
 - **Extra segments:**
   - For each dispatch, it removes any overlap with the off-peak windows.
   - The windows are built from local calendar dates in `GUARD_TIMEZONE`, so 23:30 to 05:30 is right on either side of a clock change.
@@ -38,8 +38,8 @@ Output: `{ query_ok: true, device_found: true, planned }`.
 - **Decision:**
   - **active found:**
     - The arm start is fixed once per dispatch. On the first poll that sees the dispatch, it's the dispatch start, or now if the dispatch has already started.
-    - The start is stored in workflow static data (`arm`), keyed by the dispatch start, and reused on later polls of the same dispatch.
-    - It's checked against `GUARD_SLOT_PREV_START < start < GUARD_SLOT_NEXT_START`:
+    - The start is stored in workflow static data (`arm`), keyed by the dispatch start, with the dispatch end, and reused on later polls of the same dispatch.
+    - It's checked against `GUARD_SLOT_PREV_START < start < GUARD_SLOT_NEXT_START` (wrapping past midnight for slot 1 and slot 6 only):
       - **out of order:** `mode: hold`, with no params and a `reason`.
       - **otherwise:** `mode: arm`. The params are `sellTimeN = start`, `timeNOn = '1'`, `timeNon = 'true'` and `capN = GUARD_CAP_SOC`. If the neighbours aren't set (dry run only), `reason` says "slot order not checked".
   - **no active dispatch:** `mode: restore` with the restore params (`GUARD_RESTORE_START`, `GUARD_RESTORE_GRID_CHARGE`, `GUARD_RESTORE_CAP_SOC`), and the stored `arm` is cleared.
@@ -48,6 +48,7 @@ Output: `{ query_ok: true, device_found: true, planned }`.
   - `mode`, `reason`, `extra_count`
   - `extra_start`, `extra_end`, `next_extra_start` (ISO UTC)
   - `params`, `restore_params`, `dry_run`
+  - `octopus_error`, `octopus_failures`, `arm_key`, `arm_end`
 
 ### 5. Gate And Send (Code)
 1. **`hold`:** returns `action: skipped`, and nothing is sent.
@@ -66,6 +67,10 @@ Output: `{ query_ok: true, device_found: true, planned }`.
 
    Each body is `{ command, params, sn, dry_run }`.
 6. **Record:** the marker is saved only if dry run is off and every reply is `ok: true` and `dry_run: false`. Otherwise the marker is deleted, so the next run tries again.
+   - `committed_arm` (dispatch key, start, end) is saved only for a verified `arm` write, kept on an `arm` `no_change`, and cleared on anything else (restore, dry run, failed write, plug refusal).
+
+### 6. Octopus Alert (Code)
+Runs after Gate And Send. If `octopus_error` is set, it throws `Octopus unavailable (N consecutive runs): … Fallback: mode=…, action=….`, so the execution is marked failed and the n8n error workflow fires. Otherwise it passes Gate And Send's output through. See [../safety.md](../safety.md#alerting-on-octopus-failures).
 
 ## Outputs and diagnostics
 
