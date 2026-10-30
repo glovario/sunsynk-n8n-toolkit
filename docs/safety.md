@@ -50,7 +50,8 @@ A real write needs every one of these.
 | Situation | What happens |
 |---|---|
 | Bad or missing guard settings | Config stops with every problem listed. Nothing sent. |
-| Octopus token, device or dispatch query fails (network, GraphQL `errors`, no `data`, missing field) after retries | Run stops: "… Nothing was changed." Never treated as "no dispatches", so no restore. |
+| Octopus token, device or dispatch query fails (network, GraphQL `errors`, no `data`, missing field) after retries | Run stops: "… Nothing was changed." Never treated as "no dispatches", so no restore. "Nothing was changed" is true only for *this run*: see the next row. |
+| **Octopus fails after an earlier run armed the slot** (known limitation of the current code) | `Octopus Dispatches` throws, so `Plan` and `Gate And Send` never run and **no restore is sent**. The slot stays armed (grid charge on, `capN = GUARD_CAP_SOC`) past the end of the dispatch, and the inverter can import at peak rates until Octopus answers again. Monitor failed executions and, if the API stays down, check and restore the slot by hand ([manual recovery](#emergency-manual-recovery)). |
 | No EV or charger on the account | Run stops. Nothing changed. |
 | A dispatch with a bad start/end | Run stops. Nothing changed. |
 | Plan runs without a successful query | Plan refuses: "Octopus query did not succeed; refusing to plan." |
@@ -64,7 +65,23 @@ A real write needs every one of these.
 | `crypto` blocked or Sunsynk login fails | Control stops before any write. |
 | Invalid serial, command or field | Control stops before login. |
 
+## Emergency manual recovery
+
+Disabling the automation (`SUNSYNK_WRITES_ENABLED=false`, or deactivating Control) is not the same as restoring the inverter. Anything already written stays on the inverter. To get back to a safe state:
+
+1. In the Sunsynk app, open the system timer and find slot `GUARD_SLOT` (and `SELL_SLOT` if you use Sell).
+2. Check its start time (`sellTimeN`), grid charge (`timeNOn`) and battery target (`capN`). An armed guard slot shows grid charge on, a target of `GUARD_CAP_SOC` (default 100) and a start moved to the dispatch time.
+3. Put back the settings you intend: normally your `GUARD_RESTORE_START`, `GUARD_RESTORE_GRID_CHARGE` and `GUARD_RESTORE_CAP_SOC` values. Leave protected slots alone.
+4. Save, then re-open the timer and confirm the values took.
+5. Then disable writes (`SUNSYNK_WRITES_ENABLED=false` and restart n8n, or deactivate Sunsynk Control) if you want the automation off.
+
+If you leave writes on instead, the next successful guard run with no active dispatch sends the restore itself, but only once Octopus is answering.
+
 ## What it doesn't protect against
+
+- **Known limitation of the current code:** an Octopus outage after an earlier arm leaves the slot armed past the dispatch, because no restore runs while `Octopus Dispatches` is failing. See the fail-closed table and [manual recovery](#emergency-manual-recovery).
+- Disabling writes doesn't undo an armed slot. See [manual recovery](#emergency-manual-recovery).
+- `GUARD_SLOT=1` isn't supported (see [configuration.md](configuration.md#known-issues)).
 
 - Evening Sell doesn't check slot order or protected slots, and it doesn't fail on `ok: false`.
 - If you change the inverter's timer by hand, `GUARD_SLOT_PREV_START` / `GUARD_SLOT_NEXT_START` can go out of date.

@@ -21,7 +21,8 @@
     - `no data in response`
     - `expected field missing`
     - a network error
-  - Nothing was changed. The next scheduled run tries again.
+  - Nothing was changed *by this run*. The next scheduled run tries again.
+  - **Known limitation of the current code:** if an earlier run armed the slot, it stays armed while these errors continue, even after the dispatch ends, because no restore runs. Set up monitoring of failed executions for the guard workflow (**TBD:** method depends on your n8n setup, e.g. an error workflow). If the errors persist past the dispatch, check and restore the slot by hand: see [safety.md](safety.md#emergency-manual-recovery).
 - **"No EV or charger found on the Octopus account"**
   - Set `OCTOPUS_EV_DEVICE_ID`, or check that the car or charger is linked to Intelligent Octopus on `OCTOPUS_ACCOUNT`.
 - **"Octopus query did not succeed; refusing to plan"**

@@ -43,6 +43,7 @@ There was no review checklist on hand, so this one is **derived from the code**.
 - [ ] An Octopus failure (e.g. a wrong API key) stops the run with "Nothing was changed."
 
 ### Live
+Before going live, read the [manual recovery procedure](safety.md#emergency-manual-recovery): turning writes off doesn't undo an armed slot.
 - [ ] Set `GUARD_SLOT_PREV_START` / `GUARD_SLOT_NEXT_START` to match the inverter.
 - [ ] With `SUNSYNK_WRITES_ENABLED=true` and `GUARD_DRY_RUN=false`, the first restore gives `action: written`, every reply `ok: true` with empty `mismatches`, and the Sunsynk app shows the slot as configured.
 - [ ] The next run gives `no_change`.
@@ -53,3 +54,7 @@ There was no review checklist on hand, so this one is **derived from the code**.
 - [ ] Optional Sell: replies `ok: true`, and the inverter exports from `SELL_START` down to `SELL_FLOOR_SOC`.
 - [ ] Optional Sell: `sellTimeNEn` behaviour noted if `SELL_WRITE_ENABLE_FLAG=true`.
 - [ ] Across a UK clock change (if possible), the off-peak edges are still treated as normal off-peak.
+
+### Rollback
+1. Restore the inverter first: follow [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery). Disabling writes alone leaves an armed slot in place.
+2. Then set `SUNSYNK_WRITES_ENABLED=false` and restart n8n, or deactivate Sunsynk Control.

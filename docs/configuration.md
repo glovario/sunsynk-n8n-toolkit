@@ -54,9 +54,9 @@ Columns:
 | `OCTOPUS_RETRY_DELAY_MS` | G | Base delay between tries (multiplied by the try number) | integer | ≥ 0 | `2000` | no | `2000` |
 | `GUARD_DRY_RUN` | G | Guard sends dry-run requests only | boolean | | `true` | yes (`false`) | `false` |
 | `GUARD_TIMEZONE` | G | Zone for the off-peak window and slot times | IANA zone | | `Europe/London` | no | `Europe/London` |
-| `GUARD_SLOT` | G, S | The one timer slot the guard writes | integer | 1–6 | `5` | no | `5` |
+| `GUARD_SLOT` | G, S | The one timer slot the guard writes | integer | 2–6 (Config accepts 1, but slot 1 is unsupported: see [known issues](#known-issues)) | `5` | no | `5` |
 | `GUARD_PROTECTED_SLOTS` | G | Slots never written | comma list | must not include `GUARD_SLOT` | `1,2,3,4,6` | no | `1,2,3,4,6` |
-| `GUARD_SLOT_PREV_START` | G | Start time of slot `GUARD_SLOT - 1` | `HH:MM` | | none | **yes** | `05:30` |
+| `GUARD_SLOT_PREV_START` | G | Start time of slot `GUARD_SLOT - 1` (there is no slot 0; don't use `GUARD_SLOT=1`) | `HH:MM` | | none | **yes** | `05:30` |
 | `GUARD_SLOT_NEXT_START` | G | Start time of slot `GUARD_SLOT + 1` (`00:00` if slot 6) | `HH:MM` | | none | **yes** | `23:30` |
 | `GUARD_CAP_SOC` | G | Battery target while armed | integer % | 10–100 | `100` | no | `100` |
 | `GUARD_RESTORE_START` | G | Slot start time put back afterwards | `HH:MM` | must sit between the neighbours | `18:00` | no | `18:00` |
@@ -193,6 +193,8 @@ The best timer layout for your house is **TBD** and depends on your inverter and
 
 ## Going from dry run to live
 
+Before you switch on writes, read [safety.md: Emergency manual recovery](safety.md#emergency-manual-recovery). Turning writes off later does not undo a slot the guard has already armed.
+
 1. Run everything in dry run for a few days. Check that the guard's `mode`, `extra_start`/`extra_end` and `params` look right, and that Control returns `would_write`.
 2. Set `GUARD_SLOT_PREV_START` and `GUARD_SLOT_NEXT_START` to match the inverter. Check that no run reports `hold` or "slot order not checked" unexpectedly.
 3. Set `SUNSYNK_WRITES_ENABLED=true`. With the guard still in dry run, nothing is written yet.
@@ -240,3 +242,8 @@ To go back to dry run at any time, set `SUNSYNK_WRITES_ENABLED=false`. That stop
 - `GUARD_PLUG_ON_STATES` contents
 
 The schema describes them, but nothing enforces it at run time.
+
+## Known issues
+
+- **`GUARD_SLOT=1` is unsupported.** Config accepts it, but the slot before slot 1 is really slot 6 from the previous day (for example 23:30). The guard's `inOrder` check compares plain `HH:MM` strings as `prev < start < next` and only special-cases `next = 00:00` for slot 6, so with a previous start like 23:30 every time fails the check and live runs hold or stop on restore. Don't enter a slot 0 time; use slots 2–6 for the guard until the code handles the wrap.
+- **Default `GUARD_RESTORE_START` and `SELL_START` are both `18:00`.** With the defaults (guard slot 5, Sell slot 6), the guard's restore start equals slot 6's start, so it fails the order check (`GUARD_RESTORE_START is out of slot order`) and two slots can't start at the same time anyway. If you use both workflows, set `GUARD_RESTORE_START` earlier than `SELL_START` (the [example](#worked-example) uses 16:00).
