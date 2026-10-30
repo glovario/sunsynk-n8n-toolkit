@@ -20,6 +20,7 @@ Three [n8n](https://n8n.io) workflows that change the timer settings on a **Suns
 - [FAQ](docs/faq.md)
 - [Timer quirks](docs/timer-quirks.md)
 - [Validation status](docs/validation-status.md): what has not yet been confirmed on real hardware
+- [Changelog](CHANGELOG.md): notable changes, PR by PR
 
 ## The problem it solves
 
