@@ -5,7 +5,7 @@ The guard holds the house battery during Intelligent Octopus extra dispatches, u
 ## Nodes
 
 ```
-Every 10 minutes → Config → Octopus Dispatches → Plan → Gate And Send → Octopus Alert
+Every 10 minutes → Config → Octopus Dispatches → Plan → Gate And Send → Octopus Alert → Send Alert
 ```
 
 ### 1. Every 10 minutes (schedule trigger)
@@ -67,10 +67,13 @@ Output: `{ query_ok: true, device_found: true, planned }`.
 
    Each body is `{ command, params, sn, dry_run }`.
 6. **Record:** the marker is saved only if dry run is off and every reply is `ok: true` and `dry_run: false`. Otherwise the marker is deleted, so the next run tries again.
-   - `committed_arm` (dispatch key, start, end) is saved only for a verified `arm` write, kept on an `arm` `no_change`, and cleared on anything else (restore, dry run, failed write, plug refusal).
+   - `committed_arm` (dispatch key, start, end) is saved only for a verified `arm` write, kept on an `arm` `no_change` (and its `end` updated to the latest dispatch end when the key and start still match, so an extended dispatch stays trusted during an outage; an unverified arm is never promoted), and cleared on anything else (restore, dry run, failed write, plug refusal).
 
 ### 6. Octopus Alert (Code)
-Runs after Gate And Send. If `octopus_error` is set, it throws `Octopus unavailable (N consecutive runs): … Fallback: mode=…, action=….`, so the execution is marked failed and the n8n error workflow fires. Otherwise it passes Gate And Send's output through. See [../safety.md](../safety.md#alerting-on-octopus-failures).
+Runs after Gate And Send and never throws (n8n saves static data only on a successful execution). If `octopus_error` is set and `GUARD_ALERT_WORKFLOW_ID` is set, it outputs one alert item with `message` `Octopus unavailable (N consecutive runs): … Fallback: mode=…, action=….`; otherwise nothing, and the branch ends. Continues on error.
+
+### 7. Send Alert (Execute Sub-workflow)
+Calls the workflow in `GUARD_ALERT_WORKFLOW_ID` with the alert item. It doesn't wait for the sub-workflow and continues on error, so a broken alert workflow can't fail the guard. See [../safety.md](../safety.md#alerting-on-octopus-failures).
 
 ## Outputs and diagnostics
 

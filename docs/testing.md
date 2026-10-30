@@ -23,7 +23,9 @@ Currently **45/45** pass. They cover:
 - an already-armed slot restored on plug error, with the stored start cleared
 - restore when the plug can't be read, and arm when plugged in
 - a blocked `crypto` module gives a clear error
-- Octopus outage: error routed to Plan (continue on error); arm stores start and end; a verified arm stays until the stored end, then restores; unverified arms (dry run, failed read-back, plug refused) and arms with no stored end restore; end-to-end restore write; `Octopus Alert` fails the execution with a consecutive-failure count, which resets on success
+- Octopus outage: error routed to Plan (continue on error); arm stores start and end; a verified arm stays until the stored end, then restores; unverified arms (dry run, failed read-back, plug refused) and arms with no stored end restore; end-to-end restore write; a consecutive-failure count that resets on success
+- whole executions with n8n's persistence rule (static data saved only when the execution succeeds; a failed one discards its changes): outage runs succeed and keep their state; repeated outage polls after a verified restore don't rewrite and the failure count climbs; a dispatch end extended with an arm `no_change` then an outage stays armed until the new end; an alert sub-workflow that fails doesn't fail the run or lose state
+- alert nodes: `Octopus Alert` never throws and sends only when Octopus failed and `GUARD_ALERT_WORKFLOW_ID` is set; `Send Alert` doesn't wait and continues on error
 - slot order across midnight: slot 1 (prev = slot 6), slot 6 (next = 00:00) and a middle slot
 - Config: 16:00 restore default, duplicate and out-of-order slot starts rejected, Sell cross-checks only when `SELL_ENABLED=true`
 
@@ -43,7 +45,7 @@ There was no review checklist on hand, so this one is **derived from the code**.
 - [ ] A real extra dispatch (or one outside off-peak) is armed 20 minutes before at the latest, with `sellTimeN` equal to the dispatch start, and stays the same on every poll until it ends.
 - [ ] After the dispatch, the next run gives `mode: restore`.
 - [ ] With the plug gate: an unplugged car gives restore, and a wrong `HA_TOKEN` (401) gives restore with `plug_error`.
-- [ ] An Octopus failure (e.g. a wrong API key) gives `mode: restore` (nothing was verified-armed in dry run), and the execution fails at `Octopus Alert` with `Octopus unavailable (1 consecutive runs)`; your error workflow fires.
+- [ ] An Octopus failure (e.g. a wrong API key) gives `mode: restore` (nothing was verified-armed in dry run), the execution **succeeds**, and `octopus_failures` goes up by one per run. With `GUARD_ALERT_WORKFLOW_ID` set, your alert workflow gets `Octopus unavailable (N consecutive runs): …`; break the alert workflow on purpose and check the guard execution still succeeds.
 
 ### Live
 Before going live, read the [manual recovery procedure](safety.md#emergency-manual-recovery): turning writes off doesn't undo an armed slot.

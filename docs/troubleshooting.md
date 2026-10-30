@@ -21,8 +21,8 @@
     - `no data in response`
     - `expected field missing`
     - a network error
-  - The guard doesn't stop at the Octopus node. `Plan` keeps a verified arm until its stored dispatch end, otherwise restores; `Gate And Send` writes that; then `Octopus Alert` fails the execution with `Octopus unavailable (N consecutive runs): …`. The next scheduled run tries Octopus again.
-  - Set an n8n error workflow on the guard to be notified: see [safety.md](safety.md#alerting-on-octopus-failures). If the alert shows `action=write_failed`, the restore didn't land: disable writes, restore the slot by hand and verify ([manual recovery](safety.md#emergency-manual-recovery)).
+  - The guard doesn't stop at the Octopus node. `Plan` keeps a verified arm until its stored dispatch end, otherwise restores; `Gate And Send` writes that; the execution still succeeds, with `octopus_error` and `octopus_failures` in the output. The next scheduled run tries Octopus again.
+  - Set `GUARD_ALERT_WORKFLOW_ID` to be notified: see [safety.md](safety.md#alerting-on-octopus-failures). If the alert shows `action=write_failed`, the restore didn't land: disable writes, restore the slot by hand and verify ([manual recovery](safety.md#emergency-manual-recovery)).
 - **"No EV or charger found on the Octopus account"**
   - Set `OCTOPUS_EV_DEVICE_ID`, or check that the car or charger is linked to Intelligent Octopus on `OCTOPUS_ACCOUNT`.
 - **`octopus_error: "Octopus query did not succeed"`**

@@ -146,6 +146,7 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 | `GUARD_OFFPEAK_START`, `GUARD_OFFPEAK_END` | `23:30`, `05:30` | Your normal cheap window. Dispatches inside it are ignored. |
 | `GUARD_TIMEZONE` | `Europe/London` | Used for the off-peak window and slot times. |
 | `GUARD_LEAD_IN_MIN` | `20` | Arm at most this many minutes before an extra dispatch (0–120). |
+| `GUARD_ALERT_WORKFLOW_ID` | blank | Optional n8n workflow to call when an Octopus query fails. Blank = no alert. See [docs/safety.md](docs/safety.md#alerting-on-octopus-failures). |
 | `GUARD_PLUG_STATE_URL`, `GUARD_PLUG_ON_STATES`, `HA_TOKEN` | blank, `on,plugged_in,true`, blank | Optional plug gate, e.g. `http://homeassistant.local:8123/api/states/binary_sensor.car_plugged_in`. |
 | `SELL_SLOT`, `SELL_START`, `SELL_FLOOR_SOC` | `6`, `18:00`, `50` | Sell slot, start time and floor (20–100). |
 | `SELL_WRITE_ENABLE_FLAG` | `false` | Also write `sellTimeNEn`. See the timer quirks. |
@@ -169,7 +170,7 @@ The full guide is **[docs/configuration.md](docs/configuration.md)**. All settin
 
 **Fail-closed cases.**
 
-- An Octopus API or GraphQL error, or missing data, is never treated as "no dispatches" and never arms anything new. The guard keeps an arm only if it was verified on the inverter and its stored dispatch end hasn't passed; otherwise it restores. The execution is then marked failed so an n8n error workflow can alert you.
+- An Octopus API or GraphQL error, or missing data, is never treated as "no dispatches" and never arms anything new. The guard keeps an arm only if it was verified on the inverter and its stored dispatch end hasn't passed; otherwise it restores. The execution still succeeds (n8n saves the guard's state only on successful executions); set `GUARD_ALERT_WORKFLOW_ID` to be alerted.
 - A bad config stops the run before anything is sent.
 - An arm start time out of slot order means `hold`, and nothing is written.
 - **Car unplugged** (plug gate on): the guard writes the restore settings instead of arming.
@@ -203,7 +204,7 @@ The Sunsynk timer has some odd behaviour: two spellings of grid charge, "success
 
 - **Login failed:** turn off MFA on the Sunsynk account, or use a separate account without MFA.
 - **"needs Node's built-in 'crypto' module":** see Prerequisites.
-- **"Octopus … failed after 3 tries":** an Octopus API or GraphQL error. The guard keeps a verified arm until its stored dispatch end, otherwise restores the slot, then fails the execution so your n8n error workflow alerts. It tries Octopus again on the next run. See [docs/safety.md](docs/safety.md#alerting-on-octopus-failures).
+- **"Octopus … failed after 3 tries":** an Octopus API or GraphQL error. The guard keeps a verified arm until its stored dispatch end, otherwise restores the slot, then calls your alert workflow if `GUARD_ALERT_WORKFLOW_ID` is set. It tries Octopus again on the next run. See [docs/safety.md](docs/safety.md#alerting-on-octopus-failures).
 - **"Config: …":** the message lists every setting that's wrong.
 - **`mismatches` after a write:** see the timer quirks.
 - **`plug_error` in the guard output:** check `GUARD_PLUG_STATE_URL` and `HA_TOKEN`. The guard restores the slot until it can read the plug again.

@@ -66,12 +66,21 @@ A real write needs every one of these.
 
 ## Alerting on Octopus failures
 
-`Octopus Dispatches` is set to continue on error so that the fallback restore can run. To keep outages visible, the last node, `Octopus Alert`, runs **after** `Gate And Send` (so any fallback restore has already been sent) and, when `octopus_error` is set, fails the execution with:
+`Octopus Dispatches` is set to continue on error so that the fallback restore can run. The guard execution itself must **succeed** during an outage: n8n saves workflow static data (`last`, `arm`, `committed_arm`, `octopus_failures`) only "when the workflow execution succeeds" ([n8n docs](https://docs.n8n.io/build/code-in-n8n/cookbook/built-in-methods-and-variables-examples/getworkflowstaticdata/)). If the run failed, the next run would forget a restore it had just verified and rewrite the inverter every 10 minutes. So the guard doesn't use n8n's error workflow for outages. Instead, two nodes run after `Gate And Send` (so any fallback restore has already been sent):
 
-`Octopus unavailable (N consecutive runs): <error>. Fallback: mode=<arm|restore>, action=<written|no_change|…>.`
+1. `Octopus Alert` (Code, never throws, set to continue on error). When `octopus_error` is set **and** `GUARD_ALERT_WORKFLOW_ID` is set, it outputs one item:
+   `{ alert_workflow_id, source: "io-ev-guard", kind: "octopus_unavailable", message, octopus_failures, octopus_error, mode, action, reason }`
+   where `message` is `Octopus unavailable (N consecutive runs): <error> Fallback: mode=<arm|restore>, action=<written|no_change|…>.` Otherwise it outputs nothing and the branch stops.
+2. `Send Alert` (Execute Sub-workflow) calls that workflow by ID with **Wait for Sub-Workflow Completion off** and **On Error: Continue**. With waiting off, n8n starts the sub-workflow and returns the input items straight away, so the sub-workflow's own result can't fail the guard. If the call itself fails (wrong ID, workflow missing or not callable), Continue passes an `{ error }` item on instead of stopping the workflow ([Execute Sub-workflow](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executeworkflow/), [node settings: On Error](https://docs.n8n.io/build/understand-workflows/workflow-components/work-with-nodes/)).
 
-- N counts consecutive failed Octopus queries (`octopus_failures` in static data) and resets on the next successful query.
-- Set an n8n error workflow on the guard (workflow settings → Error workflow) to be notified. The guard polls every 10 minutes, so a sustained outage fails every run; use N in your error workflow if you only want to alert after, say, 3 consecutive failures. How you deliver the alert (email, Home Assistant, etc.) is **TBD** for your setup.
+Setup:
+
+- Create an alert workflow that starts with **When Executed by Another Workflow** (input data mode **Accept all data**). In it, deliver `message` however you like: email, Home Assistant notify, ntfy, a webhook. Use `octopus_failures` to alert only after, say, 3 consecutive failures, since the guard polls every 10 minutes and a sustained outage sends an item every run.
+- In that workflow's settings, allow the guard to call it (**This workflow can be called by**), and publish it.
+- Set `GUARD_ALERT_WORKFLOW_ID` to its ID (the part after `/workflow/` in its URL).
+- Blank (the default) means no alert. The failure is still visible in each execution's output as `octopus_error` and `octopus_failures`.
+- N counts consecutive failed Octopus queries and resets on the next successful query.
+- A guard error workflow (workflow settings → Error workflow) is still worth setting for real failures, such as a bad config. Those executions stop before anything is written.
 - If the alert says `mode=restore` and `action=write_failed` (or Control is off), the slot wasn't restored: follow the manual recovery below.
 
 ## Emergency manual recovery

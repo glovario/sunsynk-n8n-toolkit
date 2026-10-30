@@ -129,6 +129,11 @@
       "type": "string",
       "default": "on,plugged_in,true"
     },
+    "GUARD_ALERT_WORKFLOW_ID": {
+      "type": "string",
+      "default": "",
+      "description": "Optional ID of an n8n workflow (trigger: When Executed by Another Workflow) that the guard calls when an Octopus query fails. Blank = no alert; the failure still shows as octopus_error/octopus_failures in the execution output."
+    },
     "GUARD_LEAD_IN_MIN": {
       "type": "integer",
       "minimum": 0,

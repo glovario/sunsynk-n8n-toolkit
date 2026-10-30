@@ -65,6 +65,7 @@ Columns:
 | `GUARD_OFFPEAK_START` | G | Start of your normal cheap window | `HH:MM` | | `23:30` | no | `23:30` |
 | `GUARD_OFFPEAK_END` | G | End of your normal cheap window | `HH:MM` | | `05:30` | no | `05:30` |
 | `GUARD_LEAD_IN_MIN` | G | Arm at most this many minutes before an extra dispatch | integer | 0–120 | `20` | no | `20` |
+| `GUARD_ALERT_WORKFLOW_ID` | G | n8n workflow ID to call when an Octopus query fails (trigger: When Executed by Another Workflow, Accept all data). Blank = no alert | string | | blank | no | `aBcD1234eFgH5678` |
 | `GUARD_PLUG_STATE_URL` | G | Home Assistant state URL for "car plugged in". Blank turns the gate off | string | | blank | no | `http://homeassistant.local:8123/api/states/binary_sensor.car_plugged_in` |
 | `GUARD_PLUG_ON_STATES` | G | States that mean plugged in (compared in lower case) | comma list | | `on,plugged_in,true` | no | `on,plugged_in,true` |
 | `HA_TOKEN` | G | Home Assistant long-lived token (secret) | string | | empty | only with the plug gate | `change-me` |
@@ -112,7 +113,7 @@ Columns:
   - The guard arms only for an extra dispatch that is running now or starts within this many minutes.
   - Timer slots have no date, so arming earlier would also affect today's matching time.
   - With the default 20 and the 10-minute schedule, a dispatch starting at 14:10 is first armed on the 13:50 run (20 minutes before).
-- **Retries:** `OCTOPUS_RETRIES` / `OCTOPUS_RETRY_DELAY_MS`. If every try fails, the guard falls back to stored state (keeps a verified arm until its stored end, otherwise restores) and the execution is marked failed. See [safety.md](safety.md#alerting-on-octopus-failures).
+- **Retries:** `OCTOPUS_RETRIES` / `OCTOPUS_RETRY_DELAY_MS`. If every try fails, the guard falls back to stored state (keeps a verified arm until its stored end, otherwise restores) and the execution still succeeds (so the state is saved), calling your alert workflow if `GUARD_ALERT_WORKFLOW_ID` is set. See [safety.md](safety.md#alerting-on-octopus-failures).
 
 ### Evening Sell
 - On each run, Sell sets slot `SELL_SLOT` to start at `SELL_START`, turns grid charge off and sets `capN` to `SELL_FLOOR_SOC`. With `SELL_WRITE_ENABLE_FLAG=true`, it also sets `sellTimeNEn` (to `1` if `SELL_ENABLED`, otherwise `0`).

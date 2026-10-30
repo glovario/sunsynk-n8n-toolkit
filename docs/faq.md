@@ -24,7 +24,7 @@ No. Everything goes through the Sunsynk cloud API.
 Timer slots are daily times with no date. Arming early would also change today's slot at that time. So it arms at most `GUARD_LEAD_IN_MIN` (default 20) minutes ahead.
 
 **What if Octopus is down?**
-It never treats a failed query as "no dispatches" and never arms a new dispatch. If an earlier run verified an arm, the slot stays armed until that dispatch's stored end, then is restored; otherwise it's restored straight away. Each failed run is marked as a failed execution so an n8n error workflow can alert you: see [Alerting on Octopus failures](safety.md#alerting-on-octopus-failures). If the restore can't be written, follow the [manual recovery procedure](safety.md#emergency-manual-recovery).
+It never treats a failed query as "no dispatches" and never arms a new dispatch. If an earlier run verified an arm, the slot stays armed until that dispatch's stored end, then is restored; otherwise it's restored straight away. The execution still succeeds, so this state is saved; set `GUARD_ALERT_WORKFLOW_ID` to be alerted: see [Alerting on Octopus failures](safety.md#alerting-on-octopus-failures). If the restore can't be written, follow the [manual recovery procedure](safety.md#emergency-manual-recovery).
 
 **What if Home Assistant is down?**
 With the plug gate set, the guard restores the slot instead of arming, and reports `plug_error`. Without the plug gate, Home Assistant isn't used.

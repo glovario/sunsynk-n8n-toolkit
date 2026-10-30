@@ -357,14 +357,123 @@ test('verified arm (written + read back) then outage within the stored end stays
   const before = writes; assert.strictEqual((await gate(p)).action, 'no_change'); assert.strictEqual(writes, before);
 });
 
-// ---- Review 5718795915 P2: outage stays visible as a failed execution, after the fallback is written
-test('Octopus Alert fails the execution after Gate And Send when octopus_error is set', async () => {
+// ---- Review 5718875588: static data persists only on successful executions; alert without failing the run
+// Run a Code node and return all output items (a node may return none).
+async function runAll(src, { nodes = {}, env = {}, state = {}, now } = {}) {
+  const $ = (name) => ({ first: () => ({ json: nodes[name] }) });
+  const fn = new AsyncFn('$', '$env', '$getWorkflowStaticData', 'require', 'Date', src);
+  return fn.call({ helpers: {} }, $, env, () => state, require, now ? fakeDate(now) : Date);
+}
+const nodeOf = (name) => guard.nodes.find((x) => x.name === name);
+// One whole execution, as n8n runs it: static data is a copy, saved back only if the execution succeeds
+// (https://docs.n8n.io/build/code-in-n8n/cookbook/built-in-methods-and-variables-examples/getworkflowstaticdata/).
+// A node error stops the execution unless that node's onError is continueRegularOutput.
+async function execute(store, { env = {}, oct, now, http, sendAlert }) {
+  const state = JSON.parse(JSON.stringify(store.data || {}));
+  const guarded = async (name, f, fallback) => {
+    try { return await f(); } catch (e) { if (nodeOf(name) && nodeOf(name).onError === 'continueRegularOutput') return fallback(e); throw e; }
+  };
+  try {
+    const cfg = await cfgFor(env);
+    const p = await run(code(guard, 'Plan'), { nodes: { Config: cfg, 'Octopus Dispatches': oct }, state, now });
+    const g = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state, http });
+    const res = { plan: p, gate: g, alerts: [] };
+    // Downstream of Gate And Send: walk the real connections.
+    let items = [{ json: g }], from = 'Gate And Send';
+    while (guard.connections[from] && items.length) {
+      const next = guard.connections[from].main[0][0].node; const n = nodeOf(next);
+      if (n.type === 'n8n-nodes-base.code') {
+        items = await guarded(next, () => runAll(n.parameters.jsCode, { nodes: { Config: cfg, Plan: p, 'Gate And Send': g }, env: { ...baseEnv, ...env }, state, now }),
+          (e) => [{ json: { error: e.message } }]);
+      } else if (n.type === 'n8n-nodes-base.executeWorkflow') {
+        const wait = !(n.parameters.options && n.parameters.options.waitForSubWorkflow === false);
+        const call = (async () => { res.alerts.push(items.map((i) => i.json)); if (sendAlert) await sendAlert(items.map((i) => i.json)); })();
+        if (wait) items = await guarded(next, async () => { await call; return items; }, (e) => [{ json: { error: e.message } }]);
+        else { call.catch(() => {}); }   // fire and forget: the sub-workflow's outcome can't fail this execution
+      } else throw new Error('harness: unhandled node type ' + n.type);
+      from = next;
+    }
+    store.data = state;
+    return { ok: true, ...res };
+  } catch (e) { return { ok: false, error: e }; }
+}
+const ARM_ENV = { GUARD_DRY_RUN: 'false', GUARD_SLOT_PREV_START: '05:30', GUARD_SLOT_NEXT_START: '23:30' };
+const disp = (end) => ({ query_ok: true, device_found: true, planned: [{ start: '2026-11-02T13:55:00Z', end }] });
+const writer = () => { const w = { n: 0, http: async () => { w.n++; return { ok: true, dry_run: false }; } }; return w; };
+
+test('harness: a failed execution discards its static-data changes', async () => {
+  const store = { data: { keep: 1 } };
+  const r = await execute(store, { env: { GUARD_SLOT: '9' }, oct: OCT_FAIL, now: '2026-11-02T14:00:00Z' });
+  assert.strictEqual(r.ok, false); assert.deepStrictEqual(store.data, { keep: 1 });
+});
+test('outage executions succeed, so the fallback state is saved', async () => {
+  const store = {}; const w = writer();
+  const r = await execute(store, { env: ARM_ENV, oct: OCT_FAIL, now: '2026-11-02T14:00:00Z', http: w.http });
+  assert.strictEqual(r.ok, true, r.error && r.error.message);
+  assert.strictEqual(store.data.octopus_failures, 1); assert.ok(store.data.last);
+});
+test('repeated outage polls after a verified restore: no repeated writes, failure count climbs', async () => {
+  const store = {}; const w = writer();
+  let r = await execute(store, { env: ARM_ENV, oct: disp('2026-11-02T15:00:00Z'), now: '2026-11-02T14:00:00Z', http: w.http });
+  assert.strictEqual(r.gate.action, 'written');
+  r = await execute(store, { env: ARM_ENV, oct: OCT_FAIL, now: '2026-11-02T15:10:00Z', http: w.http });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.gate.mode, 'restore'); assert.strictEqual(r.gate.action, 'written');
+  const after = w.n;
+  for (const [t, n] of [['15:20', 2], ['15:30', 3], ['15:40', 4]]) {
+    r = await execute(store, { env: ARM_ENV, oct: OCT_FAIL, now: `2026-11-02T${t}:00Z`, http: w.http });
+    assert.strictEqual(r.ok, true); assert.strictEqual(r.gate.action, 'no_change');
+    assert.strictEqual(r.plan.octopus_failures, n); assert.strictEqual(store.data.octopus_failures, n);
+  }
+  assert.strictEqual(w.n, after);
+});
+test('dispatch end extended (arm no_change), then Octopus outage: stays armed until the new end', async () => {
+  const store = {}; const w = writer();
+  let r = await execute(store, { env: ARM_ENV, oct: disp('2026-11-02T15:00:00Z'), now: '2026-11-02T14:00:00Z', http: w.http });
+  assert.strictEqual(r.gate.action, 'written');
+  r = await execute(store, { env: ARM_ENV, oct: disp('2026-11-02T16:00:00Z'), now: '2026-11-02T14:20:00Z', http: w.http });
+  assert.strictEqual(r.gate.action, 'no_change'); assert.strictEqual(store.data.committed_arm.end, '2026-11-02T16:00:00.000Z');
+  const before = w.n;
+  r = await execute(store, { env: ARM_ENV, oct: OCT_FAIL, now: '2026-11-02T15:30:00Z', http: w.http });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.gate.mode, 'arm'); assert.strictEqual(r.gate.action, 'no_change');
+  assert.strictEqual(w.n, before);
+  r = await execute(store, { env: ARM_ENV, oct: OCT_FAIL, now: '2026-11-02T16:00:00Z', http: w.http });
+  assert.strictEqual(r.gate.mode, 'restore'); assert.strictEqual(r.gate.action, 'written');
+});
+test('arm no_change does not mark an unverified arm as committed', async () => {
+  const cfg = await cfgFor(ARM_ENV); const state = {};
+  const p = await planWith(cfg, disp('2026-11-02T16:00:00Z'), state, '2026-11-02T14:20:00Z');
+  state.last = JSON.stringify({ mode: 'arm', params: p.params });   // marker present, but no committed_arm
+  const out = await run(code(guard, 'Gate And Send'), { nodes: { Config: cfg, Plan: p }, env: baseEnv, state, http: async () => ({ ok: true, dry_run: false }) });
+  assert.strictEqual(out.action, 'no_change'); assert.strictEqual(state.committed_arm, undefined);
+});
+test('alert sub-workflow failing does not fail the execution or lose state', async () => {
+  const store = {}; const w = writer();
+  const r = await execute(store, { env: { ...ARM_ENV, GUARD_ALERT_WORKFLOW_ID: 'wfAlert1' }, oct: OCT_FAIL, now: '2026-11-02T14:00:00Z', http: w.http,
+    sendAlert: async () => { throw new Error('alert workflow broken'); } });
+  assert.strictEqual(r.ok, true); assert.strictEqual(store.data.octopus_failures, 1); assert.ok(store.data.last);
+  assert.strictEqual(r.alerts.length, 1);
+  assert.match(r.alerts[0][0].message, /Octopus unavailable \(1 consecutive run/);
+});
+test('alert nodes: Octopus Alert never throws; Send Alert is fire-and-forget with continue on error', async () => {
   assert.strictEqual(guard.connections['Gate And Send'].main[0][0].node, 'Octopus Alert');
+  assert.ok(!/throw /.test(code(guard, 'Octopus Alert')));
+  assert.strictEqual(nodeOf('Octopus Alert').onError, 'continueRegularOutput');
+  assert.strictEqual(guard.connections['Octopus Alert'].main[0][0].node, 'Send Alert');
+  const s = nodeOf('Send Alert');
+  assert.strictEqual(s.type, 'n8n-nodes-base.executeWorkflow'); assert.strictEqual(s.onError, 'continueRegularOutput');
+  assert.strictEqual(s.parameters.options.waitForSubWorkflow, false);
+  assert.match(JSON.stringify(s.parameters.workflowId), /alert_workflow_id/);
+});
+test('Octopus Alert sends only when Octopus failed and GUARD_ALERT_WORKFLOW_ID is set', async () => {
   const src = code(guard, 'Octopus Alert');
-  const ok = await run(src, { nodes: { 'Gate And Send': { mode: 'arm', octopus_error: null, action: 'no_change' } } });
-  assert.strictEqual(ok.mode, 'arm');
-  await assert.rejects(run(src, { nodes: { 'Gate And Send': { mode: 'restore', action: 'written', octopus_error: 'boom', octopus_failures: 3 } } }),
-    /Octopus unavailable \(3 consecutive runs\).*boom.*restore.*written/);
+  const g = { mode: 'restore', action: 'written', octopus_error: 'boom', octopus_failures: 3 };
+  const with_ = await cfgFor({ GUARD_ALERT_WORKFLOW_ID: 'wfAlert1' }), without = await cfgFor({});
+  assert.strictEqual(without.alert_workflow_id, '');
+  assert.deepStrictEqual(await runAll(src, { nodes: { Config: without, 'Gate And Send': g } }), []);
+  assert.deepStrictEqual(await runAll(src, { nodes: { Config: with_, 'Gate And Send': { ...g, octopus_error: null } } }), []);
+  const [item] = await runAll(src, { nodes: { Config: with_, 'Gate And Send': g } });
+  assert.strictEqual(item.json.alert_workflow_id, 'wfAlert1');
+  assert.match(item.json.message, /Octopus unavailable \(3 consecutive runs\).*boom.*mode=restore.*action=written/);
 });
 test('consecutive Octopus failures are counted and reset on success', async () => {
   const cfg = await cfgFor({}); const state = {};
